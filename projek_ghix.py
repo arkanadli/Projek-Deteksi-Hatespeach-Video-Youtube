@@ -31,11 +31,9 @@ class IndoBERTweetBiGRU(nn.Module):
         self.fc = nn.Linear(hidden_size * 2 + self.bert.config.hidden_size, num_classes)
 
     def forward(self, input_ids, attention_mask):
-        # Pastikan input_ids dan attention_mask ada di device yang sama dengan model
-        # Jika model di CPU, ini tidak masalah. Jika nanti di GPU, ini penting.
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        sequence_output = outputs[0]  # or outputs.last_hidden_state
-        cls_output = sequence_output[:, 0, :]  # [CLS] token
+        sequence_output = outputs[0]
+        cls_output = sequence_output[:, 0, :]
         gru_output, _ = self.gru(sequence_output)
         pooled_output = gru_output.mean(dim=1)
         combined = torch.cat((pooled_output, cls_output), dim=1)
@@ -46,7 +44,7 @@ class IndoBERTweetBiGRU(nn.Module):
 LABELS = [
     "HS", "Abusive", "HS_Individual", "HS_Group", "HS_Religion",
     "HS_Race", "HS_Physical", "HS_Gender", "HS_Other",
-    "HS_Weak", "HS_Moderate", "HS_Strong", "PS"
+    "HS_Weak", "HS_Moderate", "HS_Strong", "PS" # PS = Konten Positif
 ]
 
 LABEL_DESCRIPTIONS = {
@@ -115,19 +113,15 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
 @st.cache_resource
 def load_model_tokenizer():
     try:
-        # Tentukan device (CPU atau GPU jika tersedia)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         st.info(f"Menggunakan device: {device}")
 
-        # Tokenizer: Menggunakan versi online dari Hugging Face
         st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...")
         tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
-        # Model BERT dasar juga perlu dimuat dan dipindahkan ke device
         bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased").to(device)
         st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
 
-        # 📦 Download model BiGRU (format .safetensors)
-        model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_" # ID file final_model.safetensors
+        model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_"
         safetensors_path = "final_model.safetensors"
         safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
 
@@ -141,16 +135,13 @@ def load_model_tokenizer():
                 st.info("💡 Pastikan file dapat diakses publik dan ID benar.")
                 return None, None, None
 
-        # Initialize model
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
 
-        # Load model weights from .safetensors
         if os.path.exists(safetensors_path):
             st.info("🔒 Loading model menggunakan SafeTensors...")
             try:
                 state_dict = load_file(safetensors_path)
                 model.load_state_dict(state_dict)
-                # Pindahkan keseluruhan model ke device yang sama
                 model.to(device)
                 st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!")
             except Exception as e:
@@ -162,17 +153,41 @@ def load_model_tokenizer():
             return None, None, None
 
         model.eval()
-        return model, tokenizer, device # Kembalikan juga device
+        return model, tokenizer, device
     except Exception as e:
         st.error(f"Error loading model/tokenizer: {str(e)}")
-        # Ini akan memberikan traceback lengkap untuk debugging
         import traceback
         st.exception(traceback.format_exc())
-        return None, None, None # Sesuaikan nilai kembalian jika ada error
+        return None, None, None
+
+# Fungsi untuk memprediksi satu kalimat
+def predict_sentence(text, model, tokenizer, device, threshold=0.5):
+    cleaned_text = preprocessing(text)
+    inputs = tokenizer(
+        cleaned_text,
+        return_tensors="pt",
+        truncation=True,
+        padding=True,
+        max_length=192
+    )
+    input_ids = inputs['input_ids'].to(device)
+    attention_mask = inputs['attention_mask'].to(device)
+
+    with torch.no_grad():
+        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+        probs = torch.sigmoid(logits)
+        predictions = (probs > threshold).int().numpy()[0]
+
+    detected_labels = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
+    
+    # Detail probabilitas untuk setiap label
+    label_probs = {LABELS[i]: float(probs[0][i]) for i in range(len(LABELS))}
+    
+    return detected_labels, label_probs
+
 
 # 🎯 Main App
 def main():
-    # API Key input
     api_key = st.secrets.get("searchapi_key")
     if not api_key:
         api_key = st.text_input(
@@ -182,79 +197,94 @@ def main():
             help="Dapatkan API key gratis di https://www.searchapi.io/"
         )
 
-    # YouTube URL input
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
 
     if youtube_url and api_key:
         video_id = extract_video_id(youtube_url)
         if video_id:
-            # Show video preview
             st.video(f"https://www.youtube.com/watch?v={video_id}")
 
-            # Load model
             with st.spinner("📦 Loading model dan tokenizer..."):
-                model, tokenizer, device = load_model_tokenizer() # Tangkap device
+                model, tokenizer, device = load_model_tokenizer()
 
             if model is None or tokenizer is None or device is None:
                 st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
                 return
 
             if st.button("🚀 Analisis Video"):
-                # Get transcript
                 with st.spinner("📥 Mengambil transcript dari video..."):
-                    transcript = get_transcript_from_searchapi(video_id, api_key)
+                    transcript_entries = get_transcript_from_searchapi(video_id, api_key)
 
-                if not transcript:
+                if not transcript_entries:
                     st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle bahasa Indonesia.")
                     return
 
-                # Process transcript
-                full_text = " ".join([entry['text'] for entry in transcript])
+                # Gabungkan semua teks untuk tampilan preview dan juga untuk membagi per kalimat
+                full_text = " ".join([entry['text'] for entry in transcript_entries])
                 st.success("✅ Transcript berhasil diambil!")
 
-                # Show transcript preview
                 with st.expander("📄 Cuplikan Transcript"):
                     st.text_area("", full_text[:1000] + ("..." if len(full_text) > 1000 else ""), height=200)
 
-                # Preprocess and predict
-                with st.spinner("🔍 Menganalisis hate speech..."):
-                    cleaned_text = preprocessing(full_text)
-                    inputs = tokenizer(
-                        cleaned_text,
-                        return_tensors="pt",
-                        truncation=True,
-                        padding=True,
-                        max_length=192
-                    )
+                st.subheader("🔍 Menganalisis Konten Video per Kalimat...")
+                
+                # Memecah transkrip menjadi kalimat-kalimat
+                # Gunakan regex yang lebih robust untuk memecah kalimat
+                sentences = re.split(r'(?<=[.!?])\s+|\n', full_text)
+                # Filter kalimat kosong dan trim spasi
+                clean_sentences = [s.strip() for s in sentences if s.strip()]
+                
+                if not clean_sentences:
+                    st.warning("Tidak ada kalimat yang dapat dianalisis dari transkrip ini.")
+                    return
 
-                    # Pastikan input tensor berada di device yang sama dengan model
-                    # Ambil hanya input_ids dan attention_mask
-                    input_ids = inputs['input_ids'].to(device)
-                    attention_mask = inputs['attention_mask'].to(device)
+                problematic_sentences_count = 0
+                problematic_sentences_details = []
+                
+                progress_text = "Analisis kalimat sedang berjalan. Mohon tunggu..."
+                my_bar = st.progress(0, text=progress_text)
 
-                    with torch.no_grad():
-                        # Lewatkan input_ids dan attention_mask secara eksplisit
-                        logits = model(input_ids=input_ids, attention_mask=attention_mask)
-                        probs = torch.sigmoid(logits)
-                        predictions = (probs > 0.5).int().numpy()[0]
+                for i, sentence in enumerate(clean_sentences):
+                    detected_labels, label_probs = predict_sentence(sentence, model, tokenizer, device)
+                    
+                    # Logika untuk kalimat "bermasalah": setiap label selain 'PS'
+                    is_problematic = any(label != "PS" for label in detected_labels)
+                    
+                    if is_problematic:
+                        problematic_sentences_count += 1
+                        problematic_sentences_details.append({
+                            "kalimat": sentence,
+                            "label_terdeteksi": [LABEL_DESCRIPTIONS[label] for label in detected_labels],
+                            "probabilitas": {LABEL_DESCRIPTIONS[k]: f"{v:.1%}" for k, v in label_probs.items()}
+                        })
+                    
+                    # Update progress bar
+                    progress_percentage = (i + 1) / len(clean_sentences)
+                    my_bar.progress(progress_percentage, text=f"{progress_text} {int(progress_percentage * 100)}%")
 
-                # Display results
-                st.subheader("📊 Hasil Deteksi Hate Speech:")
-                detected = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
+                my_bar.empty() # Hapus progress bar setelah selesai
 
-                if detected:
-                    st.error("🚨 Terdeteksi hate speech!")
-                    for label in detected:
-                        prob_score = float(probs[0][LABELS.index(label)] * 100)
-                        st.write(f"- 🔴 **{LABEL_DESCRIPTIONS[label]}** ({prob_score:.1f}%)")
+                st.subheader("📊 Ringkasan Hasil Deteksi Hate Speech:")
+                
+                total_sentences = len(clean_sentences)
+                if total_sentences > 0:
+                    percentage_problematic = (problematic_sentences_count / total_sentences) * 100
+                    st.info(f"Dari {total_sentences} kalimat, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai konten bermasalah (selain konten positif).")
                 else:
-                    st.success("✅ Tidak terdeteksi hate speech")
+                    st.warning("Tidak ada kalimat untuk dianalisis.")
 
-                # Show detailed scores
-                with st.expander("📈 Detail Skor Semua Kategori"):
-                    for i, (label, desc) in enumerate(zip(LABELS, [LABEL_DESCRIPTIONS[l] for l in LABELS])):
-                        score = float(probs[0][i] * 100)
-                        st.write(f"**{desc}**: {score:.1f}%")
+                if problematic_sentences_details:
+                    st.error("🚨 Berikut adalah kalimat-kalimat yang terdeteksi bermasalah:")
+                    for idx, detail in enumerate(problematic_sentences_details, 1):
+                        st.markdown(f"---")
+                        st.markdown(f"**Kalimat {idx}:** {detail['kalimat']}")
+                        st.markdown(f"**Label Terdeteksi:** {', '.join(detail['label_terdeteksi'])}")
+                        with st.expander("Detail Probabilitas:"):
+                            for label_desc, prob in detail['probabilitas'].items():
+                                st.write(f"- **{label_desc}**: {prob}")
+                else:
+                    st.success("✅ Tidak terdeteksi adanya hate speech atau konten bermasalah dalam transkrip ini.")
+
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
 
@@ -273,7 +303,7 @@ def main():
 
             **Catatan**:
             - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
-            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video.
+            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video dan jumlah kalimat.
             """
         )
 

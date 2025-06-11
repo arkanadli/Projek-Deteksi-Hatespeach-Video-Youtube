@@ -318,7 +318,7 @@ def main():
             
             for langs in languages_to_try:
                 try:
-                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=langs)
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'])
                     st.success(f"✅ Transcript ditemukan (bahasa: {', '.join(langs)})")
                     break
                 except:

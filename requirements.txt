@@ -7,3 +7,4 @@ youtube-transcript-api>=0.6.0
 huggingface-hub>=0.16.0
 tokenizers>=0.13.0
 gdown>=4.7.1
+yt-dlp

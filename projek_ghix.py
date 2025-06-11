@@ -8,8 +8,7 @@ import random
 from transformers import AutoTokenizer, AutoModel
 from youtube_transcript_api import YouTubeTranscriptApi
 import requests
-from youtube_transcript_api._api import TranscriptApi
-from youtube_transcript_api.formatters import JSONFormatter
+
 
 # Set page config
 st.set_page_config(

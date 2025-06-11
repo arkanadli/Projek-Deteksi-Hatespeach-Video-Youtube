@@ -225,7 +225,7 @@ def main():
                 st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
                 return
 
-            if st.button("🚀 Analisis Video", use_container_width=True)::
+            if st.button("🚀 Analisis Video", use_container_width=True):
                 with st.spinner("📥 Mengambil transcript dari video..."):
                     transcript_entries = get_transcript_from_searchapi(video_id, api_key)
 

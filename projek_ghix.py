@@ -1,15 +1,40 @@
 import streamlit as st
 import re
 import torch
+import torch.nn as nn
 import numpy as np
 from youtube_transcript_api import YouTubeTranscriptApi
-from transformers import AutoTokenizer
+from transformers import AutoTokenizer,AutoModel
 import os
 import gdown
 
 
 st.set_page_config(page_title="Deteksi Hate Speech pada Video", layout="centered")
 st.title("🎥 Deteksi Hate Speech dari Video YouTube")
+
+# ✅ Model Class
+class IndoBERTweetBiGRU(nn.Module):
+    def __init__(self, model_name, hidden_size, num_classes):
+        super().__init__()
+        self.bert = AutoModel.from_pretrained(model_name)
+        self.gru = nn.GRU(
+            input_size=self.bert.config.hidden_size,
+            hidden_size=hidden_size,
+            batch_first=True,
+            bidirectional=True
+        )
+        self.fc = nn.Linear(hidden_size * 2 + self.bert.config.hidden_size, num_classes)
+
+    def forward(self, input_ids, attention_mask):
+        outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
+        sequence_output = outputs[0]
+        cls_output = sequence_output[:, 0, :]  # [CLS] token
+        gru_output, _ = self.gru(sequence_output)
+        pooled_output = gru_output.mean(dim=1)  # average pooling
+        combined = torch.cat((pooled_output, cls_output), dim=1)
+        logits = self.fc(combined)
+        return logits
+
 
 # ====== Ekstrak video ID dari URL ======
 def extract_video_id(url):
@@ -55,8 +80,14 @@ LABELS = [
 @st.cache_resource
 def load_model_tokenizer():
     model_path = download_model_from_drive()
-    model = torch.load(model_path, map_location=torch.device("cpu"))
+    model = IndoBERTweetBiGRU(
+        model_name="indobenchmark/indobertweet-base-p1",
+        hidden_size=512,
+        num_classes=13
+    )
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
     model.eval()
+
     tokenizer = AutoTokenizer.from_pretrained("indobenchmark/indobertweet-base-p1")
     return model, tokenizer
 
@@ -81,7 +112,7 @@ if youtube_url:
             cleaned_text = preprocessing(full_text)
 
             # ====== Tokenisasi ======
-            inputs = tokenizer(cleaned_text, return_tensors="pt", truncation=True, padding=True)
+            inputs = tokenizer(cleaned_text,return_tensors="pt",truncation=True,padding=True,max_length=192)
 
             # ====== Inference Model ======
             with torch.no_grad():

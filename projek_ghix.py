@@ -62,7 +62,7 @@ LABEL_DESCRIPTIONS = {
     "HS_Weak": "Tingkat Kebencian Ringan",
     "HS_Moderate": "Tingkat Kebencian Sedang",
     "HS_Strong": "Tingkat Kebencian Berat",
-    "PS": "Konten Pornografi/Seksual"
+    "PS": "Konten Positif"
 }
 
 # 🧼 Preprocessing

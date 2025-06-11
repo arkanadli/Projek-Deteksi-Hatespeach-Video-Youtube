@@ -219,7 +219,7 @@ def main():
 
                 transcript_entries = transcript_data["transcripts"]
                 available_languages = transcript_data.get("available_languages", [])
-                is_auto_generated = any(lang["name"] == "Indonesian (auto-generated)" or lang["name"] == "English (auto-generated)" for lang in available_languages)
+                is_auto_generated = any(lang["name"] != "Indonesian"for lang in available_languages)
 
                 if is_auto_generated:
                     st.warning("⚠️ Transkrip ini dihasilkan secara otomatis dan mungkin mengandung kesalahan.")

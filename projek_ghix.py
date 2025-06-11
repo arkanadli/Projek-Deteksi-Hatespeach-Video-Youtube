@@ -228,10 +228,13 @@ def main():
                     )
 
                     # Pastikan input tensor berada di device yang sama dengan model
-                    inputs = {key: val.to(device) for key, val in inputs.items()}
+                    # Ambil hanya input_ids dan attention_mask
+                    input_ids = inputs['input_ids'].to(device)
+                    attention_mask = inputs['attention_mask'].to(device)
 
                     with torch.no_grad():
-                        logits = model(**inputs)
+                        # Lewatkan input_ids dan attention_mask secara eksplisit
+                        logits = model(input_ids=input_ids, attention_mask=attention_mask)
                         probs = torch.sigmoid(logits)
                         predictions = (probs > 0.5).int().numpy()[0]
 

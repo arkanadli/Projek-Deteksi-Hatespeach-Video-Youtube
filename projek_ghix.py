@@ -8,7 +8,7 @@ import gdown
 import requests
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
-# import safetensors.torch # Mengapa ini tidak digunakan jika Anda tidak memiliki file .safetensors
+from safetensors.torch import load_file, save_file # Pastikan safetensors terinstal
 
 st.set_page_config(
     page_title="Deteksi Hate Speech pada Video",
@@ -121,55 +121,58 @@ def load_model_tokenizer():
         if not os.path.exists(tokenizer_dir):
             st.info("📥 Downloading tokenizer dari Google Drive...")
             try:
+                # gdown.download_folder memerlukan folder yang di-zip atau struktur yang dapat diunduh
+                # Jika folder tokenizer di GDrive tidak di-zip, gdown.download_folder mungkin gagal.
+                # Sebagai alternatif yang lebih aman dan jika folder tidak di-zip,
+                # lebih baik mengunduh secara individual atau menggunakan solusi manual.
+                # Namun, kita akan tetap mencoba metode download_folder ini dulu.
                 gdown.download_folder(tokenizer_zip_url, output=tokenizer_dir, quiet=False, use_cookies=False)
             except Exception as e:
                 st.warning(f"Gagal mendownload tokenizer lokal: {e}. Menggunakan tokenizer online sebagai fallback.")
+                # Fallback ke unduhan online jika gdown.download_folder gagal
                 tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
                 bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
         else:
             tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
             bert = AutoModel.from_pretrained(tokenizer_dir, local_files_only=True)
 
-        # Jika gagal load dari local, gunakan online
+        # Jika gagal load dari local atau tokenizer masih None, gunakan online
         if 'tokenizer' not in locals() or tokenizer is None:
             st.info("Menggunakan tokenizer online (fallback).")
             tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
             bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
 
-        # 📦 Download model BiGRU (format .pth)
-        model_pth_id = "1OpDWxAl7bcKCm9OVb0vZCmEDZcBi424B"
-        pth_path = "model_bigru.pth"
-        pth_url = f"https://drive.google.com/uc?id={model_pth_id}"
+        # 📦 Download model BiGRU (format .safetensors)
+        model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_" # ID file final_model.safetensors
+        safetensors_path = "final_model.safetensors"
+        safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
 
-        if not os.path.exists(pth_path):
-            st.info("📥 Downloading model .pth dari Google Drive...")
+        if not os.path.exists(safetensors_path):
+            st.info("📥 Downloading model SafeTensors dari Google Drive...")
             try:
-                gdown.download(pth_url, pth_path, quiet=False)
-                st.success("✅ Model .pth berhasil didownload!")
+                gdown.download(safetensors_url, safetensors_path, quiet=False)
+                st.success("✅ Model SafeTensors berhasil didownload!")
             except Exception as e:
-                st.error(f"❌ Gagal download model .pth: {str(e)}")
-                st.info("💡 Pastikan file dapat diakses publik dan ID benar")
+                st.error(f"❌ Gagal download model SafeTensors: {str(e)}")
+                st.info("💡 Pastikan file dapat diakses publik dan ID benar.")
                 return None, None
 
         # Initialize model
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
 
-        # Load model weights from .pth
-        if os.path.exists(pth_path):
-            st.info("🔒 Loading model menggunakan PyTorch (.pth)...")
+        # Load model weights from .safetensors
+        if os.path.exists(safetensors_path):
+            st.info("🔒 Loading model menggunakan SafeTensors...")
             try:
-                # Penting: weights_only=True adalah rekomendasi keamanan untuk PyTorch >= 1.12
-                # Jika PyTorch Anda lebih lama, mungkin perlu dihapus atau diatur ke False
-                # namun ini dapat menimbulkan risiko keamanan.
-                state_dict = torch.load(pth_path, map_location=torch.device('cpu'), weights_only=True)
+                state_dict = load_file(safetensors_path)
                 model.load_state_dict(state_dict)
-                st.success("✅ Model berhasil dimuat dari .pth!")
+                st.success("✅ Model berhasil dimuat dari SafeTensors!")
             except Exception as e:
-                st.error(f"❌ Gagal memuat model dari .pth: {str(e)}")
-                st.info("💡 Pastikan versi PyTorch Anda kompatibel dan file model tidak korup.")
+                st.error(f"❌ Gagal memuat model dari SafeTensors: {str(e)}")
+                st.info("💡 Pastikan file SafeTensors tidak korup dan arsitektur model cocok.")
                 return None, None
         else:
-            st.error("❌ File model .pth tidak ditemukan. Pastikan model telah diupload ke Google Drive.")
+            st.error("❌ File model SafeTensors tidak ditemukan. Pastikan telah diunduh.")
             return None, None
 
         model.eval()
@@ -275,45 +278,52 @@ def main():
             5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai
 
             **Catatan**:
-            - Meskipun aplikasi ini sekarang mendukung model .pth, **sangat disarankan untuk mengonversi model Anda ke format SafeTensors (.safetensors)** untuk keamanan dan efisiensi.
             - Model akan didownload otomatis dari Google Drive saat pertama kali digunakan.
             - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video.
             """
         )
 
     # Conversion utility (for manual conversion with PyTorch >=2.6)
-    with st.expander("🔧 Panduan Konversi Manual ke SafeTensors"):
+    with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):
         st.markdown(
             """
-            **Untuk mengkonversi model .pth ke SafeTensors secara manual:**
+            **Untuk mengonversi model .pth ke SafeTensors secara manual:**
 
             ```python
             # Jalankan di environment dengan PyTorch >=2.6
             from safetensors.torch import save_file
             import torch
+            import os
 
-            # Load model .pth (aman dengan PyTorch >=2.6)
-            # Pastikan path ke model .pth Anda benar
-            state_dict = torch.load("model_bigru.pth",
-                                            map_location="cpu",
-                                            weights_only=True)
+            # Ganti dengan path ke file .pth Anda
+            pth_file_path = "nama_model_anda.pth"
+            safetensors_output_path = "nama_model_anda.safetensors"
 
-            # Save sebagai SafeTensors
-            save_file(state_dict, "model_bigru.safetensors")
-            print("✅ Konversi berhasil! File model_bigru.safetensors telah dibuat.")
+            if not os.path.exists(pth_file_path):
+                print(f"Error: File '{pth_file_path}' tidak ditemukan.")
+            else:
+                try:
+                    print(f"Memuat model dari '{pth_file_path}'...")
+                    # weights_only=True adalah rekomendasi keamanan untuk PyTorch >= 1.12
+                    state_dict = torch.load(pth_file_path, map_location="cpu", weights_only=True)
+                    print("Model berhasil dimuat. Mengonversi ke SafeTensors...")
+                    save_file(state_dict, safetensors_output_path)
+                    print(f"✅ Konversi berhasil! File '{safetensors_output_path}' telah dibuat.")
+                    print(f"Sekarang upload '{safetensors_output_path}' ke Google Drive Anda dan perbarui ID-nya di kode Streamlit.")
+                except Exception as e:
+                    print(f"❌ Gagal mengonversi model: {e}")
+                    print("Pastikan file .pth tidak korup dan versi PyTorch Anda terbaru (>= 2.6 direkomendasikan).")
             ```
 
             **Langkah-langkah:**
-            1. Pastikan Anda memiliki PyTorch versi **2.6 atau lebih baru**: `pip install torch>=2.6`
+            1. Pastikan Anda memiliki PyTorch versi **2.6 atau lebih baru**: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu`
             2. Instal pustaka SafeTensors: `pip install safetensors`
-            3. Jalankan script konversi Python di atas di lingkungan lokal Anda.
-            4. Setelah `model_bigru.safetensors` dibuat, **upload file tersebut ke Google Drive Anda**.
-            5. Dapatkan **ID berbagi** dari file `model_bigru.safetensors` tersebut, lalu **perbarui ID `model_safetensors_id`** dalam kode Streamlit.
-            Dengan begitu, aplikasi Anda akan memuat versi SafeTensors yang lebih aman dan direkomendasikan.
+            3. Unduh file `.pth` Anda secara manual ke komputer lokal Anda.
+            4. Buat dan jalankan skrip Python di atas (ganti `pth_file_path` dengan nama file `.pth` Anda).
+            5. Upload file `.safetensors` yang dihasilkan ke Google Drive dan dapatkan ID berbagi barunya.
+            6. Perbarui `model_safetensors_id` di kode Streamlit Anda dengan ID baru tersebut.
             """
         )
-
-        st.warning("⚠️ Menggunakan model .pth mungkin memiliki risiko keamanan jika PyTorch Anda lebih lama dari 1.12 atau jika sumbernya tidak tepercaya. Konversi ke SafeTensors sangat dianjurkan.")
 
 if __name__ == "__main__":
     main()

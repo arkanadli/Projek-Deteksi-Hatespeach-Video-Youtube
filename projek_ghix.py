@@ -67,93 +67,91 @@ LABEL_DESCRIPTIONS = {
     "PS": "Konten Pornografi/Seksual"
 }
 
-# --- YouTubeTranscriptProcessor dari Kode Lokal Anda ---
-class YouTubeTranscriptProcessor:
-    def __init__(self, tokenizer_path, model_path, model_name="indolem/indobertweet-base-uncased",
-                 hidden_size=512, num_classes=13):
-        """
-        Inisialisasi processor dengan path tokenizer dan model untuk analisis transkrip YouTube
+# --- Fungsi Pemuatan Model dan Tokenizer (di-cache oleh Streamlit) ---
+@st.cache_resource # Gunakan cache Streamlit untuk menghindari loading berulang
+def load_bert_and_model(tokenizer_path, model_path, model_name="indolem/indobertweet-base-uncased",
+                       hidden_size=512, num_classes=13):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    st.info(f"Menggunakan device: {device}")
+    try:
+        # Menggunakan path lokal untuk tokenizer
+        if os.path.exists(tokenizer_path) and os.path.isdir(tokenizer_path): # Cek jika itu folder yang valid
+            st.info(f"📥 Memuat tokenizer dari path lokal: {tokenizer_path}")
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_path)
+            bert = AutoModel.from_pretrained(tokenizer_path).to(device)
+        else:
+            st.warning(f"Folder tokenizer lokal tidak ditemukan di {tokenizer_path}. Mengunduh tokenizer online sebagai fallback.")
+            tokenizer = AutoTokenizer.from_pretrained(model_name)
+            bert = AutoModel.from_pretrained(model_name).to(device)
+        st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
 
-        Args:
-            tokenizer_path (str): Path ke folder tokenizer IndoBERTweet lokal
-            model_path (str): Path ke file model .pth atau .safetensors
-            model_name (str): Nama model BERT untuk inisialisasi arsitektur (jika tidak lokal, gunakan nama HF)
-            hidden_size (int): Hidden size untuk GRU layer
-            num_classes (int): Jumlah kelas output
-        """
-        self.tokenizer_path = tokenizer_path
-        self.model_path = model_path
-        self.model_name = model_name
-        self.hidden_size = hidden_size
-        self.num_classes = num_classes
-        self.tokenizer = None
-        self.model = None
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Inisialisasi arsitektur model
+        model = IndoBERTweetBiGRU(
+            bert=bert, # Gunakan instance bert yang sudah dimuat
+            hidden_size=hidden_size,
+            num_classes=num_classes
+        )
 
-        # Label mapping untuk 13 kelas (sudah ada di LABELS global)
-        self.label_mapping = {i: label for i, label in enumerate(LABELS)}
+        # Load state dict dari file model
+        if not os.path.exists(model_path):
+            st.error(f"Model file tidak ditemukan: {model_path}")
+            raise FileNotFoundError(f"Model file tidak ditemukan: {model_path}")
 
-        # Load tokenizer dan model
-        self.load_tokenizer_and_model()
-
-    @st.cache_resource # Gunakan cache Streamlit untuk menghindari loading berulang
-    def load_tokenizer_and_model(self):
-        st.info(f"Menggunakan device: {self.device}")
+        st.info(f"🔒 Memuat bobot model dari: {model_path}")
         try:
-            # Menggunakan path lokal untuk tokenizer
-            if os.path.exists(self.tokenizer_path):
-                st.info(f"📥 Memuat tokenizer dari path lokal: {self.tokenizer_path}")
-                self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
-                bert = AutoModel.from_pretrained(self.tokenizer_path).to(self.device)
-            else:
-                st.warning(f"Folder tokenizer lokal tidak ditemukan di {self.tokenizer_path}. Mengunduh tokenizer online sebagai fallback.")
-                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
-                bert = AutoModel.from_pretrained(self.model_name).to(self.device)
-            st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
+            # Cek apakah file .safetensors
+            if model_path.endswith(".safetensors"):
+                state_dict = load_file(model_path)
+            else: # Anggap sebagai .pth
+                state_dict = torch.load(model_path, map_location=device)
 
-            # Inisialisasi arsitektur model
-            self.model = IndoBERTweetBiGRU(
-                bert=bert, # Gunakan instance bert yang sudah dimuat
-                hidden_size=self.hidden_size,
-                num_classes=self.num_classes
-            )
-
-            # Load state dict dari file model
-            if not os.path.exists(self.model_path):
-                st.error(f"Model file tidak ditemukan: {self.model_path}")
-                raise FileNotFoundError(f"Model file tidak ditemukan: {self.model_path}")
-
-            st.info(f"🔒 Memuat bobot model dari: {self.model_path}")
-            try:
-                # Cek apakah file .safetensors
-                if self.model_path.endswith(".safetensors"):
-                    state_dict = load_file(self.model_path)
-                else: # Anggap sebagai .pth
-                    state_dict = torch.load(self.model_path, map_location=self.device)
-
-                # Handle berbagai format checkpoint (seperti di kode lokal Anda)
-                if isinstance(state_dict, dict):
-                    if 'model_state_dict' in state_dict:
-                        self.model.load_state_dict(state_dict['model_state_dict'])
-                    elif 'state_dict' in state_dict:
-                        self.model.load_state_dict(state_dict['state_dict'])
-                    else:
-                        self.model.load_state_dict(state_dict)
+            # Handle berbagai format checkpoint (seperti di kode lokal Anda)
+            if isinstance(state_dict, dict):
+                if 'model_state_dict' in state_dict:
+                    model.load_state_dict(state_dict['model_state_dict'])
+                elif 'state_dict' in state_dict:
+                    model.load_state_dict(state_dict['state_dict'])
                 else:
-                    self.model.load_state_dict(state_dict)
+                    model.load_state_dict(state_dict)
+            else:
+                model.load_state_dict(state_dict)
 
-                self.model.to(self.device) # Pindahkan model ke device yang benar
-                self.model.eval() # Set ke evaluation mode
-                st.success(f"✅ Model IndoBERTweetBiGRU berhasil dimuat dari: {self.model_path}!")
-
-            except Exception as e:
-                st.error(f"❌ Error loading model weights: {e}")
-                st.info("💡 Tips: Pastikan parameter model_name, hidden_size, dan num_classes sesuai dengan model yang disimpan. Pastikan juga file model tidak korup.")
-                raise
+            model.to(device) # Pindahkan model ke device yang benar
+            model.eval() # Set ke evaluation mode
+            st.success(f"✅ Model IndoBERTweetBiGRU berhasil dimuat dari: {model_path}!")
 
         except Exception as e:
-            st.error(f"Error inisialisasi model/tokenizer: {e}")
+            st.error(f"❌ Error loading model weights: {e}")
+            st.info("💡 Tips: Pastikan parameter model_name, hidden_size, dan num_classes sesuai dengan model yang disimpan. Pastikan juga file model tidak korup.")
             raise
+
+    except Exception as e:
+        st.error(f"Error inisialisasi model/tokenizer: {e}")
+        # import traceback
+        # st.exception(traceback.format_exc()) # Uncomment for full traceback during debugging
+        raise
+
+    return model, tokenizer, device
+
+
+# --- YouTubeTranscriptProcessor dari Kode Lokal Anda (diperbarui) ---
+class YouTubeTranscriptProcessor:
+    def __init__(self, model, tokenizer, device, num_classes=13):
+        """
+        Inisialisasi processor dengan model, tokenizer, dan device yang sudah dimuat.
+
+        Args:
+            model: Instance model IndoBERTweetBiGRU yang sudah dimuat.
+            tokenizer: Instance tokenizer yang sudah dimuat.
+            device: Device (torch.device) di mana model berada.
+            num_classes (int): Jumlah kelas output.
+        """
+        self.model = model
+        self.tokenizer = tokenizer
+        self.device = device
+        self.num_classes = num_classes
+
+        self.label_mapping = {i: label for i, label in enumerate(LABELS)} # Gunakan LABELS global
 
     def extract_video_id(self, url):
         # Implementasi dari kode lokal Anda
@@ -178,10 +176,12 @@ class YouTubeTranscriptProcessor:
         try:
             video_id = self.extract_video_id(video_url_or_id)
             if not video_id:
-                video_url = video_url_or_id if video_url_or_id.startswith('http') else f"http://www.youtube.com/watch?v={video_url_or_id}"
-                video_id = video_url_or_id # fallback
+                # Perbaikan kecil di sini untuk URL yang benar
+                video_url = video_url_or_id if video_url_or_id.startswith('http') else f"https://www.youtube.com/watch?v={video_url_or_id}"
+                video_id = video_url_or_id # fallback jika input adalah ID saja
             else:
-                video_url = f"http://www.youtube.com/watch?v={video_id}"
+                video_url = f"https://www.youtube.com/watch?v={video_id}"
+
 
             st.info(f"🔍 Mengambil transkrip untuk video: {video_url}")
 
@@ -507,34 +507,40 @@ def main():
     # PASTIKAN PATH INI SESUAI DENGAN LOKASI FILE DI LINGKUNGAN DEPLOYMENT STREAMLIT ANDA
     # Jika Anda mendeploy di Streamlit Community Cloud, pastikan file-file ini di-upload
     # ke repo GitHub Anda dan pathnya relatif.
-    tokenizer_dir = "indobertweet-base-uncased" # Anggap ini ada di root folder Streamlit Anda
-    model_file_pth = "final_model.pth" # Atau "final_model.safetensors" jika Anda sudah konversi
+    # Contoh jika ada di folder 'models' di root repo:
+    # tokenizer_dir = "models/indobertweet-base-uncased"
+    # model_file_path = "models/final_model.pth"
 
-    # Untuk testing lokal dengan path absolut Windows:
-    # tokenizer_dir = "G:\\03. Kerjaan\\kodingan TA\\indobertweet-base-uncased"
-    # model_file_pth = "G:\\03. Kerjaan\\kodingan TA\\final_model.pth"
+    # Untuk Streamlit Community Cloud, umumnya direktori root adalah '/app/repo_name'
+    # Jadi jika folder 'indobertweet-base-uncased' dan 'final_model.pth' ada di root repo:
+    tokenizer_dir = "./indobertweet-base-uncased"
+    model_file_path = "./final_model.pth" # Sesuaikan jika sudah diubah ke .safetensors
 
-    # Inisialisasi processor hanya sekali
-    @st.cache_resource
-    def get_processor(tokenizer_path, model_path):
-        return YouTubeTranscriptProcessor(
-            tokenizer_path=tokenizer_path,
-            model_path=model_path,
-            model_name="indolem/indobertweet-base-uncased", # Gunakan nama Hugging Face untuk fallback
-            hidden_size=512,
-            num_classes=13
-        )
+    # Inisialisasi model, tokenizer, dan device hanya sekali menggunakan cache
+    model, tokenizer, device = load_bert_and_model(
+        tokenizer_path=tokenizer_dir,
+        model_path=model_file_path,
+        model_name="indolem/indobertweet-base-uncased", # Gunakan nama Hugging Face untuk fallback
+        hidden_size=512,
+        num_classes=13
+    )
 
-    # Inisialisasi processor
-    processor = get_processor(tokenizer_dir, model_file_pth)
-
+    # Inisialisasi processor dengan objek yang sudah dimuat
+    # Ini memastikan YouTubeTranscriptProcessor tidak menyimpan objek yang tidak dapat di-hash
+    # dan tidak melakukan pemuatan model/tokenizer itu sendiri.
+    processor = YouTubeTranscriptProcessor(
+        model=model,
+        tokenizer=tokenizer,
+        device=device,
+        num_classes=13
+    )
 
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
 
     if youtube_url:
         video_id = processor.extract_video_id(youtube_url)
         if video_id:
-            st.video(f"http://www.youtube.com/watch?v={video_id}") # Perbaiki format URL video preview
+            st.video(f"https://www.youtube.com/watch?v={video_id}") # Perbaiki format URL video preview
 
             # Tambahkan opsi untuk threshold dan segment analysis
             col1, col2 = st.columns(2)
@@ -615,6 +621,8 @@ def main():
                     st.markdown("- URL video YouTube valid dan bersifat publik.")
                     st.markdown("- Koneksi internet stabil.")
                     st.markdown("- `yt-dlp` dan dependensi lainnya terinstal dengan benar (`pip install yt-dlp transformers torch safetensors numpy`).")
+                    import traceback
+                    st.exception(traceback.format_exc()) # Menampilkan traceback penuh untuk debugging
 
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
@@ -627,7 +635,7 @@ def main():
                 * Pastikan Anda memiliki folder tokenizer `indobertweet-base-uncased` dan file model `final_model.pth` (atau `final_model.safetensors` jika sudah dikonversi) di **lokasi yang dapat diakses oleh aplikasi Streamlit**.
                 * **Sangat disarankan** untuk meletakkan folder `indobertweet-base-uncased` dan file `final_model.pth` (atau `.safetensors`) di **direktori yang sama** dengan file `.py` Streamlit ini, atau di sub-folder yang relevan.
                 * Jika Anda menggunakan Streamlit Community Cloud (atau platform hosting lainnya), Anda harus menyertakan folder dan file ini dalam repositori GitHub Anda.
-                * **Edit kode ini**: Ubah nilai `tokenizer_dir` dan `model_file_pth` di awal fungsi `main()` agar sesuai dengan lokasi file Anda (misalnya: `tokenizer_dir = "my_models/indobertweet-base-uncased"`).
+                * **Edit kode ini**: Ubah nilai `tokenizer_dir` dan `model_file_path` di awal fungsi `main()` agar sesuai dengan lokasi file Anda (misalnya: `tokenizer_dir = "my_models/indobertweet-base-uncased"`).
 
             2.  **Instal Dependensi**:
                 ```bash
@@ -667,7 +675,7 @@ def main():
                     print("Model berhasil dimuat. Mengonversi ke SafeTensors...")
                     save_file(state_dict, safetensors_output_path)
                     print(f"✅ Konversi berhasil! File '{safetensors_output_path}' telah dibuat.")
-                    print(f"Sekarang Anda dapat mengganti `model_file_pth` di kode Streamlit dengan path ke file .safetensors ini.")
+                    print(f"Sekarang Anda dapat mengganti `model_file_path` di kode Streamlit dengan path ke file .safetensors ini.")
                 except Exception as e:
                     print(f"❌ Gagal mengonversi model: {e}")
                     print("Pastikan file .pth tidak korup dan versi PyTorch Anda terbaru (>= 2.6 direkomendasikan).")
@@ -678,7 +686,7 @@ def main():
             2.  Instal pustaka SafeTensors: `pip install safetensors`
             3.  Unduh file `.pth` Anda secara manual ke komputer lokal Anda.
             4.  Buat dan jalankan skrip Python di atas (ganti `pth_file_path` dan `safetensors_output_path` sesuai).
-            5.  Perbarui `model_file_pth` di kode Streamlit Anda dengan path ke file `.safetensors` yang baru.
+            5.  Perbarui `model_file_path` di kode Streamlit Anda dengan path ke file `.safetensors` yang baru.
             """
         )
 

@@ -8,7 +8,7 @@ import gdown
 import requests
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
-from safetensors.torch import load_file, save_file # Pastikan safetensors terinstal
+from safetensors.torch import load_file # Import load_file untuk SafeTensors
 
 st.set_page_config(
     page_title="Deteksi Hate Speech pada Video",
@@ -109,38 +109,18 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
         st.error(f"Gagal mengambil transcript: {str(e)}")
         return None
 
-# 📦 Download model dan tokenizer dari Google Drive
+# 📦 Download model dan tokenizer
 @st.cache_resource
 def load_model_tokenizer():
     try:
-        # 📁 Download folder tokenizer (shared as zipped manually)
-        tokenizer_zip_id = "14xqjAOJDw57wq9XpnYK8sWRQk-KO4uIu"
-        tokenizer_dir = "indobertweet-tokenizer"
-        tokenizer_zip_url = f"https://drive.google.com/uc?id={tokenizer_zip_id}"
-
-        if not os.path.exists(tokenizer_dir):
-            st.info("📥 Downloading tokenizer dari Google Drive...")
-            try:
-                # gdown.download_folder memerlukan folder yang di-zip atau struktur yang dapat diunduh
-                # Jika folder tokenizer di GDrive tidak di-zip, gdown.download_folder mungkin gagal.
-                # Sebagai alternatif yang lebih aman dan jika folder tidak di-zip,
-                # lebih baik mengunduh secara individual atau menggunakan solusi manual.
-                # Namun, kita akan tetap mencoba metode download_folder ini dulu.
-                gdown.download_folder(tokenizer_zip_url, output=tokenizer_dir, quiet=False, use_cookies=False)
-            except Exception as e:
-                st.warning(f"Gagal mendownload tokenizer lokal: {e}. Menggunakan tokenizer online sebagai fallback.")
-                # Fallback ke unduhan online jika gdown.download_folder gagal
-                tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
-                bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
-        else:
-            tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
-            bert = AutoModel.from_pretrained(tokenizer_dir, local_files_only=True)
-
-        # Jika gagal load dari local atau tokenizer masih None, gunakan online
-        if 'tokenizer' not in locals() or tokenizer is None:
-            st.info("Menggunakan tokenizer online (fallback).")
-            tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
-            bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
+        # Tokenizer: Menggunakan versi online untuk kemudahan dan menghindari masalah gdown.download_folder
+        # Jika Anda ingin menyimpan tokenizer secara lokal, Anda perlu mengunduh file-file individunya
+        # atau memastikan folder di GDrive dapat di-zip dan diunduh dengan gdown.download_folder.
+        # Untuk saat ini, mari kita prioritaskan agar aplikasi bisa berjalan.
+        st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...")
+        tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
+        bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
+        st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
 
         # 📦 Download model BiGRU (format .safetensors)
         model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_" # ID file final_model.safetensors
@@ -180,6 +160,9 @@ def load_model_tokenizer():
 
     except Exception as e:
         st.error(f"Error loading model/tokenizer: {str(e)}")
+        # Untuk debugging, Anda bisa menampilkan traceback lengkap
+        # import traceback
+        # st.exception(traceback.format_exc())
         return None, None
 
 # 🎯 Main App
@@ -272,25 +255,24 @@ def main():
         st.markdown(
             """
             1. **Dapatkan API key** dari [SearchAPI.io](https://www.searchapi.io/) (gratis)
-            2. **Masukkan API key** di field yang tersedia
-            3. **Paste URL video YouTube** yang ingin dianalisis
-            4. **Pastikan video memiliki subtitle bahasa Indonesia**
-            5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai
+            2. **Masukkan API key** di field yang tersedia.
+            3. **Paste URL video YouTube** yang ingin dianalisis.
+            4. **Pastikan video memiliki subtitle bahasa Indonesia**.
+            5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
 
             **Catatan**:
-            - Model akan didownload otomatis dari Google Drive saat pertama kali digunakan.
+            - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
             - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video.
             """
         )
 
-    # Conversion utility (for manual conversion with PyTorch >=2.6)
     with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):
         st.markdown(
             """
-            **Untuk mengonversi model .pth ke SafeTensors secara manual:**
+            Jika Anda memiliki model PyTorch dalam format `.pth` dan ingin mengonversinya ke SafeTensors untuk keamanan dan kompatibilitas yang lebih baik:
 
             ```python
-            # Jalankan di environment dengan PyTorch >=2.6
+            # Jalankan di environment dengan PyTorch >= 2.6
             from safetensors.torch import save_file
             import torch
             import os

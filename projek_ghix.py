@@ -225,7 +225,7 @@ def main():
                     st.warning("⚠️ Transkrip ini dihasilkan secara otomatis dan mungkin mengandung kesalahan.")
 
                 full_text = " ".join([entry['text'] + ". " for entry in transcript_entries]) # Menambahkan titik di setiap entry
-                st.success("✅ Transcript berhasil diambil!")
+                st.success("✅ Transcript berhasil diambil! ")
 
                 with st.expander("📄 Cuplikan Transcript"):
                     st.text_area("", full_text[:1000] + ("..." if len(full_text) > 1000 else ""), height=200)

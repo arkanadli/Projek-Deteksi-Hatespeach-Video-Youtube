@@ -1,5 +1,7 @@
 streamlit
 torch
 transformers
-gdown
-youtube_transcript_api
+numpy
+requests
+youtube-transcript-api
+huggingface-hub

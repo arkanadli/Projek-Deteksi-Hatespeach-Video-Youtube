@@ -277,6 +277,9 @@ def main():
                 total_sentences = len(clean_sentences)
                 if total_sentences > 0:
                     percentage_problematic = (problematic_sentences_count / total_sentences) * 100
+                     # Tambahan Warning jika lebih dari 50% kalimat tidak positif
+                    if percentage_problematic > 1:
+                        st.error("⚠️ **PERINGATAN**: Lebih dari 50% konten video ini terdeteksi sebagai **konten tidak positif** (ujaran kebencian/abusive) dan **tidak layak dikonsumsi** secara umum.")
                     st.error(f"Dari **{total_sentences} kalimat**, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai **konten bermasalah** (Ujaran Kebencian / Abusive).")
                 else:
                     st.warning("Tidak ada kalimat untuk dianalisis.")

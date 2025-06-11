@@ -7,6 +7,9 @@ import os
 import random
 from transformers import AutoTokenizer, AutoModel
 from youtube_transcript_api import YouTubeTranscriptApi
+import requests
+from youtube_transcript_api._api import TranscriptApi
+from youtube_transcript_api.formatters import JSONFormatter
 
 # Set page config
 st.set_page_config(
@@ -84,22 +87,31 @@ def extract_video_id(url):
 # Ambil transcript otomatis
 # Ambil transcript otomatis (dengan dukungan proxy)
 def get_transcript(video_id):
+    proxy_host = "107.172.163.27"
+    proxy_port = "6543"
+    proxy_user = "ktsafopf"
+    proxy_pass = "rlqzqqwoytk8"
+
+    proxy_url = f"http://{proxy_user}:{proxy_pass}@{proxy_host}:{proxy_port}"
+
     proxies = {
-        "https": "http://143.42.66.91:80"
+        "http": proxy_url,
+        "https": proxy_url
     }
-    
+
     try:
-        # Coba ambil transcript pakai proxy
+        response = requests.get(
+            f"https://video.google.com/timedtext?lang=id&v={video_id}",
+            proxies=proxies,
+            timeout=10
+        )
+        if response.status_code != 200 or "<transcript>" not in response.text:
+            return None
         transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'], proxies=proxies)
         return transcript
     except Exception as e:
-        try:
-            # Fallback tanpa proxy
-            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'])
-            return transcript
-        except Exception as fallback_error:
-            print("Gagal mengambil transcript:", fallback_error)
-            return None
+        print("Gagal ambil dengan proxy:", e)
+        return None
 
 
 # Load model dan tokenizer

@@ -8,10 +8,10 @@ import gdown
 import requests
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
-from safetensors.torch import load_file, save_file
+# import safetensors.torch # Mengapa ini tidak digunakan jika Anda tidak memiliki file .safetensors
 
 st.set_page_config(
-    page_title="Deteksi Hate Speech pada Video", 
+    page_title="Deteksi Hate Speech pada Video",
     page_icon="🇮🇩",
     layout="centered"
 )
@@ -109,29 +109,21 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
         st.error(f"Gagal mengambil transcript: {str(e)}")
         return None
 
-# 🔄 Convert PyTorch model to SafeTensors (utility function)
-def convert_pth_to_safetensors(pth_path: str, safetensors_path: str):
-    """Convert .pth model to .safetensors format"""
-    st.error("❌ Konversi otomatis tidak tersedia karena vulnerability PyTorch.")
-    st.info("💡 Silakan konversi model secara manual dengan PyTorch ≥2.6 atau gunakan file SafeTensors yang sudah ada.")
-    return False
-
 # 📦 Download model dan tokenizer dari Google Drive
 @st.cache_resource
 def load_model_tokenizer():
     try:
-        # 📁 Download folder tokenizer (shared as zipped manually)  
-        tokenizer_zip_id = "14xqjAOJDw57wq9XpnYK8sWRQk-KO4uIu"  # Ganti dengan ID Google Drive Anda
+        # 📁 Download folder tokenizer (shared as zipped manually)
+        tokenizer_zip_id = "14xqjAOJDw57wq9XpnYK8sWRQk-KO4uIu"
         tokenizer_dir = "indobertweet-tokenizer"
+        tokenizer_zip_url = f"https://drive.google.com/uc?id={tokenizer_zip_id}"
 
         if not os.path.exists(tokenizer_dir):
             st.info("📥 Downloading tokenizer dari Google Drive...")
-            zip_url = f"https://drive.google.com/uc?id={tokenizer_zip_id}"
             try:
-                gdown.download_folder(zip_url, output=tokenizer_dir, quiet=False, use_cookies=False)
-            except:
-                # Fallback jika download folder gagal
-                st.warning("Menggunakan tokenizer online...")
+                gdown.download_folder(tokenizer_zip_url, output=tokenizer_dir, quiet=False, use_cookies=False)
+            except Exception as e:
+                st.warning(f"Gagal mendownload tokenizer lokal: {e}. Menggunakan tokenizer online sebagai fallback.")
                 tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
                 bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
         else:
@@ -139,51 +131,50 @@ def load_model_tokenizer():
             bert = AutoModel.from_pretrained(tokenizer_dir, local_files_only=True)
 
         # Jika gagal load dari local, gunakan online
-        if 'tokenizer' not in locals():
+        if 'tokenizer' not in locals() or tokenizer is None:
+            st.info("Menggunakan tokenizer online (fallback).")
             tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
             bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
 
-        # 📦 Download model BiGRU 
-        # HANYA gunakan SafeTensors format
-        model_safetensors_id = "YOUR_SAFETENSORS_MODEL_ID"  # Ganti dengan ID file .safetensors
-        safetensors_path = "model_bigru.safetensors"
-        
-        # Download SafeTensors version
-        if not os.path.exists(safetensors_path):
-            st.info("📥 Downloading model SafeTensors dari Google Drive...")
-            
-            # Cek apakah ID sudah diubah
-            if model_safetensors_id == "YOUR_SAFETENSORS_MODEL_ID":
-                st.error("❌ Harap ganti 'YOUR_SAFETENSORS_MODEL_ID' dengan ID Google Drive yang sebenarnya")
-                st.info("💡 Upload model dalam format SafeTensors ke Google Drive dan dapatkan sharing ID-nya")
-                return None, None
-            
-            safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
-            
+        # 📦 Download model BiGRU (format .pth)
+        model_pth_id = "1OpDWxAl7bcKCm9OVb0vZCmEDZcBi424B"
+        pth_path = "model_bigru.pth"
+        pth_url = f"https://drive.google.com/uc?id={model_pth_id}"
+
+        if not os.path.exists(pth_path):
+            st.info("📥 Downloading model .pth dari Google Drive...")
             try:
-                gdown.download(safetensors_url, safetensors_path, quiet=False)
-                st.success("✅ Model SafeTensors berhasil didownload!")
+                gdown.download(pth_url, pth_path, quiet=False)
+                st.success("✅ Model .pth berhasil didownload!")
             except Exception as e:
-                st.error(f"❌ Gagal download model SafeTensors: {str(e)}")
+                st.error(f"❌ Gagal download model .pth: {str(e)}")
                 st.info("💡 Pastikan file dapat diakses publik dan ID benar")
                 return None, None
 
         # Initialize model
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
-        
-        # Load model weights using SafeTensors
-        if os.path.exists(safetensors_path):
-            st.info("🔒 Loading model menggunakan SafeTensors...")
-            state_dict = load_file(safetensors_path)
-            model.load_state_dict(state_dict)
-            st.success("✅ Model berhasil dimuat dengan SafeTensors!")
+
+        # Load model weights from .pth
+        if os.path.exists(pth_path):
+            st.info("🔒 Loading model menggunakan PyTorch (.pth)...")
+            try:
+                # Penting: weights_only=True adalah rekomendasi keamanan untuk PyTorch >= 1.12
+                # Jika PyTorch Anda lebih lama, mungkin perlu dihapus atau diatur ke False
+                # namun ini dapat menimbulkan risiko keamanan.
+                state_dict = torch.load(pth_path, map_location=torch.device('cpu'), weights_only=True)
+                model.load_state_dict(state_dict)
+                st.success("✅ Model berhasil dimuat dari .pth!")
+            except Exception as e:
+                st.error(f"❌ Gagal memuat model dari .pth: {str(e)}")
+                st.info("💡 Pastikan versi PyTorch Anda kompatibel dan file model tidak korup.")
+                return None, None
         else:
-            st.error("❌ File model tidak ditemukan. Pastikan model telah diupload ke Google Drive.")
+            st.error("❌ File model .pth tidak ditemukan. Pastikan model telah diupload ke Google Drive.")
             return None, None
-        
+
         model.eval()
         return model, tokenizer
-        
+
     except Exception as e:
         st.error(f"Error loading model/tokenizer: {str(e)}")
         return None, None
@@ -194,7 +185,7 @@ def main():
     api_key = st.secrets.get("searchapi_key")
     if not api_key:
         api_key = st.text_input(
-            "🔑 SearchAPI Key", 
+            "🔑 SearchAPI Key",
             placeholder="Masukkan API key SearchAPI.io Anda",
             type="password",
             help="Dapatkan API key gratis di https://www.searchapi.io/"
@@ -208,11 +199,11 @@ def main():
         if video_id:
             # Show video preview
             st.video(f"https://www.youtube.com/watch?v={video_id}")
-            
+
             # Load model
             with st.spinner("📦 Loading model dan tokenizer..."):
                 model, tokenizer = load_model_tokenizer()
-            
+
             if model is None or tokenizer is None:
                 st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
                 return
@@ -221,7 +212,7 @@ def main():
                 # Get transcript
                 with st.spinner("📥 Mengambil transcript dari video..."):
                     transcript = get_transcript_from_searchapi(video_id, api_key)
-                
+
                 if not transcript:
                     st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle bahasa Indonesia.")
                     return
@@ -229,7 +220,7 @@ def main():
                 # Process transcript
                 full_text = " ".join([entry['text'] for entry in transcript])
                 st.success("✅ Transcript berhasil diambil!")
-                
+
                 # Show transcript preview
                 with st.expander("📄 Cuplikan Transcript"):
                     st.text_area("", full_text[:1000] + ("..." if len(full_text) > 1000 else ""), height=200)
@@ -238,10 +229,10 @@ def main():
                 with st.spinner("🔍 Menganalisis hate speech..."):
                     cleaned_text = preprocessing(full_text)
                     inputs = tokenizer(
-                        cleaned_text, 
-                        return_tensors="pt", 
-                        truncation=True, 
-                        padding=True, 
+                        cleaned_text,
+                        return_tensors="pt",
+                        truncation=True,
+                        padding=True,
                         max_length=192
                     )
 
@@ -253,7 +244,7 @@ def main():
                 # Display results
                 st.subheader("📊 Hasil Deteksi Hate Speech:")
                 detected = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
-                
+
                 if detected:
                     st.error("🚨 Terdeteksi hate speech!")
                     for label in detected:
@@ -269,55 +260,60 @@ def main():
                         st.write(f"**{desc}**: {score:.1f}%")
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
-    
+
     elif youtube_url and not api_key:
         st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
-    
+
     # Instructions
     with st.expander("ℹ️ Cara Menggunakan"):
-        st.markdown("""
-        1. **Dapatkan API key** dari [SearchAPI.io](https://www.searchapi.io/) (gratis)
-        2. **Masukkan API key** di field yang tersedia
-        3. **Paste URL video YouTube** yang ingin dianalisis
-        4. **Pastikan video memiliki subtitle bahasa Indonesia**
-        5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai
-        
-        **Catatan**: 
-        - Model HARUS dalam format SafeTensors (.safetensors)
-        - Konversi dari .pth harus dilakukan secara manual dengan PyTorch ≥2.6
-        - Model akan didownload otomatis dari Google Drive saat pertama kali digunakan
-        - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video
-        """)
+        st.markdown(
+            """
+            1. **Dapatkan API key** dari [SearchAPI.io](https://www.searchapi.io/) (gratis)
+            2. **Masukkan API key** di field yang tersedia
+            3. **Paste URL video YouTube** yang ingin dianalisis
+            4. **Pastikan video memiliki subtitle bahasa Indonesia**
+            5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai
 
-    # Conversion utility (for manual conversion with PyTorch ≥2.6)
-    with st.expander("🔧 Manual Conversion Guide"):
-        st.markdown("""
-        **Untuk mengkonversi model .pth ke SafeTensors secara manual:**
-        
-        ```python
-        # Jalankan di environment dengan PyTorch ≥2.6
-        from safetensors.torch import save_file
-        import torch
-        
-        # Load model .pth (aman dengan PyTorch ≥2.6)
-        state_dict = torch.load("model_bigru.pth", 
-                               map_location="cpu", 
-                               weights_only=True)
-        
-        # Save sebagai SafeTensors
-        save_file(state_dict, "model_bigru.safetensors")
-        print("✅ Konversi berhasil!")
-        ```
-        
-        **Langkah-langkah:**
-        1. Upgrade PyTorch: `pip install torch>=2.6`
-        2. Install SafeTensors: `pip install safetensors`
-        3. Jalankan script konversi di atas
-        4. Upload `model_bigru.safetensors` ke Google Drive
-        5. Dapatkan sharing ID dan update kode
-        """)
-        
-        st.warning("⚠️ Konversi otomatis dinonaktifkan karena vulnerability PyTorch <2.6")
+            **Catatan**:
+            - Meskipun aplikasi ini sekarang mendukung model .pth, **sangat disarankan untuk mengonversi model Anda ke format SafeTensors (.safetensors)** untuk keamanan dan efisiensi.
+            - Model akan didownload otomatis dari Google Drive saat pertama kali digunakan.
+            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video.
+            """
+        )
+
+    # Conversion utility (for manual conversion with PyTorch >=2.6)
+    with st.expander("🔧 Panduan Konversi Manual ke SafeTensors"):
+        st.markdown(
+            """
+            **Untuk mengkonversi model .pth ke SafeTensors secara manual:**
+
+            ```python
+            # Jalankan di environment dengan PyTorch >=2.6
+            from safetensors.torch import save_file
+            import torch
+
+            # Load model .pth (aman dengan PyTorch >=2.6)
+            # Pastikan path ke model .pth Anda benar
+            state_dict = torch.load("model_bigru.pth",
+                                            map_location="cpu",
+                                            weights_only=True)
+
+            # Save sebagai SafeTensors
+            save_file(state_dict, "model_bigru.safetensors")
+            print("✅ Konversi berhasil! File model_bigru.safetensors telah dibuat.")
+            ```
+
+            **Langkah-langkah:**
+            1. Pastikan Anda memiliki PyTorch versi **2.6 atau lebih baru**: `pip install torch>=2.6`
+            2. Instal pustaka SafeTensors: `pip install safetensors`
+            3. Jalankan script konversi Python di atas di lingkungan lokal Anda.
+            4. Setelah `model_bigru.safetensors` dibuat, **upload file tersebut ke Google Drive Anda**.
+            5. Dapatkan **ID berbagi** dari file `model_bigru.safetensors` tersebut, lalu **perbarui ID `model_safetensors_id`** dalam kode Streamlit.
+            Dengan begitu, aplikasi Anda akan memuat versi SafeTensors yang lebih aman dan direkomendasikan.
+            """
+        )
+
+        st.warning("⚠️ Menggunakan model .pth mungkin memiliki risiko keamanan jika PyTorch Anda lebih lama dari 1.12 atau jika sumbernya tidak tepercaya. Konversi ke SafeTensors sangat dianjurkan.")
 
 if __name__ == "__main__":
     main()

@@ -92,7 +92,7 @@ def extract_video_id(url):
     return None
 
 # 🌐 Ambil transcript dari SearchAPI.io
-def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[Dict]]:
+def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[Dict]:
     try:
         url = "https://www.searchapi.io/api/v1/search"
         params = {
@@ -104,7 +104,7 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
         response = requests.get(url, params=params, timeout=15)
         response.raise_for_status()
         data = response.json()
-        return data.get("transcripts", [])
+        return data
     except Exception as e:
         st.error(f"Gagal mengambil transcript: {str(e)}")
         return None
@@ -114,22 +114,16 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
 def load_model_tokenizer():
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        # st.info(f"Menggunakan device: {device}") # Dikomen
-
-        # st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...") # Dikomen
         tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
         bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased").to(device)
-        # st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!") # Dikomen
 
         model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_"
         safetensors_path = "final_model.safetensors"
         safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
 
         if not os.path.exists(safetensors_path):
-            # st.info("📥 Downloading model SafeTensors dari Google Drive...") # Dikomen
             try:
                 gdown.download(safetensors_url, safetensors_path, quiet=False)
-                # st.success("✅ Model SafeTensors berhasil didownload!") # Dikomen
             except Exception as e:
                 st.error(f"❌ Gagal download model SafeTensors: {str(e)}")
                 st.info("💡 Pastikan file dapat diakses publik dan ID benar.")
@@ -138,12 +132,10 @@ def load_model_tokenizer():
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
 
         if os.path.exists(safetensors_path):
-            # st.info("🔒 Loading model menggunakan SafeTensors...") # Dikomen
             try:
                 state_dict = load_file(safetensors_path)
                 model.load_state_dict(state_dict)
                 model.to(device)
-                # st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!") # Dikomen
             except Exception as e:
                 st.error(f"❌ Gagal memuat model dari SafeTensors: {str(e)}")
                 st.info("💡 Pastikan file SafeTensors tidak korup dan arsitektur model cocok.")
@@ -190,11 +182,7 @@ def predict_sentence(text, model, tokenizer, device, threshold=0.5):
 def main():
     # SearchAPI key disematkan langsung di sini
     api_key = "Quq35w6JgdtV1fJcnACFK4qF"
-    # st.secrets.get("searchapi_key") # Dikomen atau dihapus
 
-    # Input API Key dihapus karena sudah disematkan
-    # if not api_key:
-    #     api_key = st.text_input(...)
     with st.expander("ℹ️ Cara Menggunakan"):
         st.markdown(
             """
@@ -207,11 +195,8 @@ def main():
             """
         )
 
-
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
 
-    # Kondisi 'if youtube_url and api_key:' diubah menjadi hanya 'if youtube_url:'
-    # karena api_key sudah disematkan dan selalu ada.
     if youtube_url:
         video_id = extract_video_id(youtube_url)
         if video_id:
@@ -226,13 +211,20 @@ def main():
 
             if st.button("🚀 Analisis Video", use_container_width=True):
                 with st.spinner("📥 Mengambil transcript dari video..."):
-                    transcript_entries = get_transcript_from_searchapi(video_id, api_key)
+                    transcript_data = get_transcript_from_searchapi(video_id, api_key)
 
-                if not transcript_entries:
+                if not transcript_data or "transcripts" not in transcript_data:
                     st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle bahasa Indonesia.")
                     return
 
-                full_text = " ".join([entry['text'] for entry in transcript_entries])
+                transcript_entries = transcript_data["transcripts"]
+                available_languages = transcript_data.get("available_languages", [])
+                is_auto_generated = any(lang["name"] == "Indonesian (auto-generated)" or lang["name"] == "English (auto-generated)" for lang in available_languages)
+
+                if is_auto_generated:
+                    st.warning("⚠️ Transkrip ini dihasilkan secara otomatis dan mungkin mengandung kesalahan.")
+
+                full_text = " ".join([entry['text'] + ". " for entry in transcript_entries]) # Menambahkan titik di setiap entry
                 st.success("✅ Transcript berhasil diambil!")
 
                 with st.expander("📄 Cuplikan Transcript"):
@@ -277,7 +269,7 @@ def main():
                 total_sentences = len(clean_sentences)
                 if total_sentences > 0:
                     percentage_problematic = (problematic_sentences_count / total_sentences) * 100
-                     # Tambahan Warning jika lebih dari 50% kalimat tidak positif
+                    # Tambahan Warning jika lebih dari 50% kalimat tidak positif
                     if percentage_problematic > 10.0:
                         st.error("⚠️ **PERINGATAN**: Lebih dari 10% konten video ini terdeteksi sebagai **konten tidak positif** (ujaran kebencian/abusive) dan **tidak layak dikonsumsi** secara umum.")
                     st.error(f"Dari **{total_sentences} kalimat**, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai **konten bermasalah** (Ujaran Kebencian / Abusive).")
@@ -304,16 +296,6 @@ def main():
 
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
-
-    # Bagian ini dihapus karena api_key sudah disematkan
-    # elif youtube_url and not api_key:
-    #     st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
-
-    
-
-    # 🔧 Panduan Konversi Manual (Jika diperlukan) dihapus
-    # with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):
-    #     st.markdown(...)
 
 if __name__ == "__main__":
     main()

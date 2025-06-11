@@ -106,6 +106,116 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
+# 📦 Get available transcript languages
+def get_available_languages(video_id):
+    """Get list of available transcript languages for a video"""
+    try:
+        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+        available_languages = []
+        
+        for transcript in transcript_list:
+            lang_info = {
+                'language': transcript.language,
+                'language_code': transcript.language_code,
+                'is_generated': transcript.is_generated,
+                'is_translatable': transcript.is_translatable
+            }
+            available_languages.append(lang_info)
+        
+        return available_languages
+    except Exception as e:
+        st.error(f"Error getting available languages: {str(e)}")
+        return []
+
+# 🎬 Enhanced transcript retrieval with better language handling
+def get_transcript_smart(video_id):
+    """Get transcript with intelligent language selection"""
+    try:
+        # First, get available languages
+        available_languages = get_available_languages(video_id)
+        
+        if not available_languages:
+            raise Exception("No transcripts available for this video")
+        
+        # Display available languages to user
+        st.info("📋 **Bahasa transcript yang tersedia:**")
+        for lang in available_languages:
+            status = "Manual" if not lang['is_generated'] else "Auto-generated"
+            translatable = "✅ Dapat diterjemahkan" if lang['is_translatable'] else "❌ Tidak dapat diterjemahkan"
+            st.write(f"• **{lang['language']}** ({lang['language_code']}) - {status} - {translatable}")
+        
+        # Priority order for transcript languages
+        language_priority = [
+            'id',      # Indonesian
+            'en',      # English
+            'ms',      # Malay
+            'jv',      # Javanese
+        ]
+        
+        transcript = None
+        used_language = None
+        
+        # Try to get transcript in priority order
+        for lang_code in language_priority:
+            try:
+                transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang_code])
+                used_language = lang_code
+                st.success(f"✅ Transcript ditemukan dalam bahasa: **{lang_code}**")
+                break
+            except Exception:
+                continue
+        
+        # If priority languages not found, try any available language
+        if transcript is None:
+            for lang in available_languages:
+                try:
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang['language_code']])
+                    used_language = lang['language_code']
+                    st.success(f"✅ Transcript ditemukan dalam bahasa: **{lang['language']}** ({lang['language_code']})")
+                    break
+                except Exception:
+                    continue
+        
+        # If still no transcript, try to get any available transcript
+        if transcript is None:
+            try:
+                # Get the first available transcript
+                transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
+                first_transcript = next(iter(transcript_list))
+                transcript = first_transcript.fetch()
+                used_language = first_transcript.language_code
+                st.success(f"✅ Transcript ditemukan dalam bahasa: **{first_transcript.language}**")
+            except Exception as e:
+                raise Exception(f"Tidak dapat mengambil transcript: {str(e)}")
+        
+        return transcript, used_language
+        
+    except Exception as e:
+        # Provide more detailed error information
+        error_msg = str(e)
+        st.error(f"❌ Error mengambil transcript: {error_msg}")
+        
+        # Suggest solutions based on error type
+        if "No transcripts were found" in error_msg:
+            st.info("""
+            **💡 Solusi yang bisa dicoba:**
+            1. Pastikan video memiliki subtitle/caption (cek di pengaturan video YouTube)
+            2. Video mungkin terlalu baru (subtitle auto-generated butuh waktu)
+            3. Coba video lain yang sudah pasti memiliki subtitle
+            4. Periksa apakah video bersifat public dan dapat diakses
+            """)
+        elif "private" in error_msg.lower():
+            st.info("**💡 Video bersifat private atau tidak dapat diakses publik**")
+        else:
+            st.info("""
+            **💡 Kemungkinan penyebab:**
+            - Video tidak memiliki subtitle sama sekali
+            - Ada masalah koneksi internet
+            - Video telah dihapus atau tidak tersedia
+            """)
+        
+        return None, None
+
 # 📦 Robust download function
 def download_file_robust(url, destination, chunk_size=8192):
     """Download file with robust error handling"""
@@ -179,36 +289,6 @@ def load_model_tokenizer():
             status_text.text(f"⚠️ HF Hub failed: {str(e)[:100]}...")
             progress_bar.progress(0.2)
             
-            # Method 2: Load from Google Drive
-            status_text.text("🔄 Downloading from Google Drive...")
-            
-            tokenizer_dir = "indobertweet-tokenizer"
-            
-            if not os.path.exists(tokenizer_dir):
-                os.makedirs(tokenizer_dir, exist_ok=True)
-                
-                # Download tokenizer files individually (more reliable)
-                tokenizer_files = {
-                    'config.json': 'YOUR_CONFIG_FILE_ID',
-                    'tokenizer.json': 'YOUR_TOKENIZER_FILE_ID', 
-                    'tokenizer_config.json': 'YOUR_TOKENIZER_CONFIG_ID',
-                    'vocab.txt': 'YOUR_VOCAB_FILE_ID'
-                }
-                
-                # For now, create a minimal config
-                config = {
-                    "model_type": "bert",
-                    "vocab_size": 30522,
-                    "hidden_size": 768,
-                    "num_hidden_layers": 12,
-                    "num_attention_heads": 12,
-                    "intermediate_size": 3072,
-                    "max_position_embeddings": 512
-                }
-                
-                with open(os.path.join(tokenizer_dir, 'config.json'), 'w') as f:
-                    json.dump(config, f)
-            
             # Fallback: Use base BERT model
             try:
                 tokenizer = AutoTokenizer.from_pretrained('bert-base-uncased')
@@ -278,8 +358,10 @@ def main():
     st.markdown("""
     ### 📋 Instruksi:
     1. Masukkan URL video YouTube
-    2. Sistem akan menganalisis transcript video
+    2. Sistem akan menganalisis transcript video (mendukung berbagai bahasa)
     3. Hasil deteksi hate speech akan ditampilkan
+    
+    **🌐 Bahasa yang didukung:** Indonesia, Inggris, Melayu, Jawa, dan bahasa lainnya
     """)
     
     youtube_url = st.text_input(
@@ -308,130 +390,104 @@ def main():
             st.error("❌ Failed to load model. Please try again later.")
             return
 
-        # Get transcript
+        # Get transcript with enhanced error handling
         st.info("📥 Mengambil transcript dari video...")
         
+        transcript, used_language = get_transcript_smart(video_id)
+        
+        if transcript is None:
+            return  # Error already handled in get_transcript_smart
+        
+        # Process transcript
+        full_text = " ".join([entry['text'] for entry in transcript])
+        
+        if len(full_text.strip()) == 0:
+            st.warning("⚠️ Transcript kosong atau tidak dapat diproses")
+            return
+        
+        # Show transcript preview
+        with st.expander("📄 Preview Transcript"):
+            st.text_area("", full_text[:1000] + "..." if len(full_text) > 1000 else full_text, height=150)
+            st.caption(f"Total karakter: {len(full_text)} | Bahasa: {used_language}")
+
+        # Preprocess and analyze
+        st.info("🔍 Menganalisis konten...")
+        
+        cleaned_text = preprocessing(full_text)
+        
+        if len(cleaned_text.strip()) == 0:
+            st.warning("⚠️ Tidak ada teks yang dapat dianalisis setelah preprocessing")
+            return
+        
+        # Tokenize with proper error handling
         try:
-            # Try multiple language options
-            transcript = None
-            languages_to_try = [['id'], ['en'], ['id', 'en']]
-            
-            for langs in languages_to_try:
-                try:
-                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'])
-                    st.success(f"✅ Transcript ditemukan (bahasa: {', '.join(langs)})")
-                    break
-                except:
-                    continue
-            
-            if transcript is None:
-                # Try auto-generated transcript
-                transcript = YouTubeTranscriptApi.get_transcript(video_id)
-                st.success("✅ Auto-generated transcript ditemukan")
-            
-            # Process transcript
-            full_text = " ".join([entry['text'] for entry in transcript])
-            
-            if len(full_text.strip()) == 0:
-                st.warning("⚠️ Transcript kosong atau tidak dapat diproses")
-                return
-            
-            # Show transcript preview
-            with st.expander("📄 Preview Transcript"):
-                st.text_area("", full_text[:1000] + "..." if len(full_text) > 1000 else full_text, height=150)
-                st.caption(f"Total karakter: {len(full_text)}")
-
-            # Preprocess and analyze
-            st.info("🔍 Menganalisis konten...")
-            
-            cleaned_text = preprocessing(full_text)
-            
-            if len(cleaned_text.strip()) == 0:
-                st.warning("⚠️ Tidak ada teks yang dapat dianalisis setelah preprocessing")
-                return
-            
-            # Tokenize with proper error handling
-            try:
-                inputs = tokenizer(
-                    cleaned_text, 
-                    return_tensors="pt", 
-                    truncation=True, 
-                    padding=True, 
-                    max_length=128,
-                    add_special_tokens=True
-                )
-            except Exception as e:
-                st.error(f"❌ Tokenization error: {str(e)}")
-                return
-
-            # Predict
-            with torch.no_grad():
-                try:
-                    logits = model(**inputs)
-                    probs = torch.sigmoid(logits)
-                    predictions = (probs > 0.5).int().numpy()[0]
-                    confidence_scores = probs[0].numpy()
-                except Exception as e:
-                    st.error(f"❌ Prediction error: {str(e)}")
-                    return
-
-            # Display results
-            st.markdown("---")
-            st.subheader("📊 Hasil Analisis Hate Speech")
-            
-            detected_labels = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
-            
-            if detected_labels:
-                st.warning("⚠️ **PERINGATAN: Konten berpotensi mengandung hate speech**")
-                
-                col1, col2 = st.columns(2)
-                
-                with col1:
-                    st.markdown("**🚨 Kategori Terdeteksi:**")
-                    for label in detected_labels:
-                        description = LABEL_DESCRIPTIONS.get(label, label)
-                        st.write(f"• **{description}**")
-                
-                with col2:
-                    st.markdown("**📈 Confidence Scores:**")
-                    for label in detected_labels:
-                        idx = LABELS.index(label)
-                        confidence = confidence_scores[idx] * 100
-                        st.write(f"• {label}: {confidence:.1f}%")
-                
-            else:
-                st.success("✅ **Tidak terdeteksi hate speech dalam video ini**")
-                st.info("Video ini tampaknya aman dari konten hate speech")
-            
-            # Detailed analysis
-            with st.expander("📊 Analisis Detail Semua Kategori"):
-                for i, (label, confidence) in enumerate(zip(LABELS, confidence_scores)):
-                    description = LABEL_DESCRIPTIONS.get(label, label)
-                    is_detected = predictions[i] == 1
-                    
-                    col1, col2, col3 = st.columns([3, 1, 1])
-                    with col1:
-                        st.write(f"**{description}**")
-                    with col2:
-                        st.write(f"{confidence*100:.1f}%")
-                    with col3:
-                        if is_detected:
-                            st.write("🚨 **DETECTED**")
-                        else:
-                            st.write("✅ Clear")
-                        
+            inputs = tokenizer(
+                cleaned_text, 
+                return_tensors="pt", 
+                truncation=True, 
+                padding=True, 
+                max_length=128,
+                add_special_tokens=True
+            )
         except Exception as e:
-            st.error(f"❌ Error mengambil transcript: {str(e)}")
-            st.info("""
-            **Kemungkinan penyebab:**
-            - Video tidak memiliki subtitle/caption
-            - Video bersifat private atau tidak tersedia
-            - Subtitle tidak tersedia dalam bahasa Indonesia/Inggris
+            st.error(f"❌ Tokenization error: {str(e)}")
+            return
+
+        # Predict
+        with torch.no_grad():
+            try:
+                logits = model(**inputs)
+                probs = torch.sigmoid(logits)
+                predictions = (probs > 0.5).int().numpy()[0]
+                confidence_scores = probs[0].numpy()
+            except Exception as e:
+                st.error(f"❌ Prediction error: {str(e)}")
+                return
+
+        # Display results
+        st.markdown("---")
+        st.subheader("📊 Hasil Analisis Hate Speech")
+        
+        detected_labels = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
+        
+        if detected_labels:
+            st.warning("⚠️ **PERINGATAN: Konten berpotensi mengandung hate speech**")
             
-            **Solusi:**
-            - Pastikan video memiliki subtitle otomatis atau manual
-            - Coba video lain yang memiliki caption
-            """)
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**🚨 Kategori Terdeteksi:**")
+                for label in detected_labels:
+                    description = LABEL_DESCRIPTIONS.get(label, label)
+                    st.write(f"• **{description}**")
+            
+            with col2:
+                st.markdown("**📈 Confidence Scores:**")
+                for label in detected_labels:
+                    idx = LABELS.index(label)
+                    confidence = confidence_scores[idx] * 100
+                    st.write(f"• {label}: {confidence:.1f}%")
+            
+        else:
+            st.success("✅ **Tidak terdeteksi hate speech dalam video ini**")
+            st.info("Video ini tampaknya aman dari konten hate speech")
+        
+        # Detailed analysis
+        with st.expander("📊 Analisis Detail Semua Kategori"):
+            for i, (label, confidence) in enumerate(zip(LABELS, confidence_scores)):
+                description = LABEL_DESCRIPTIONS.get(label, label)
+                is_detected = predictions[i] == 1
+                
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.write(f"**{description}**")
+                with col2:
+                    st.write(f"{confidence*100:.1f}%")
+                with col3:
+                    if is_detected:
+                        st.write("🚨 **DETECTED**")
+                    else:
+                        st.write("✅ Clear")
 
 if __name__ == "__main__":
     main()

@@ -15,7 +15,7 @@ st.set_page_config(
     page_icon="🇮🇩",
     layout="centered"
 )
-st.title("🎥 Deteksi Hate Speech dari Video YouTube")
+st.title("🎥 Deteksi Hate Speech dan Abusive Language dari Video YouTube Berbahasa Indonesia")
 
 # ✅ Arsitektur model
 class IndoBERTweetBiGRU(nn.Module):
@@ -48,7 +48,7 @@ LABELS = [
 ]
 
 LABEL_DESCRIPTIONS = {
-    "HS": "Ujaran Kebencian Umum",
+    "HS": "Ujaran Kebencian",
     "Abusive": "Bahasa Kasar/Ofensif",
     "HS_Individual": "Kebencian terhadap Individu",
     "HS_Group": "Kebencian terhadap Kelompok",
@@ -60,7 +60,7 @@ LABEL_DESCRIPTIONS = {
     "HS_Weak": "Tingkat Kebencian Ringan",
     "HS_Moderate": "Tingkat Kebencian Sedang",
     "HS_Strong": "Tingkat Kebencian Berat",
-    "PS": "Konten Positif"
+    "PS": "Ujaran Positif"
 }
 
 # 🧼 Preprocessing
@@ -203,8 +203,7 @@ def main():
             3. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
 
             **Catatan**:
-            - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
-            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video dan jumlah kalimat.
+            Proses analisis membutuhkan waktu beberapa detik tergantung panjang video dan jumlah kalimat.
             """
         )
 

@@ -65,9 +65,9 @@ def extract_video_id(url):
 # 📦 Load model dan tokenizer
 @st.cache_resource
 def load_model_tokenizer():
-    MODEL_DIR = "indobertweet-base-uncased"
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR)
-    bert = AutoModel.from_pretrained(MODEL_DIR)
+    MODEL_DIR = os.path.join(os.getcwd(), "indobertweet-base-uncased")
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True)
+    bert = AutoModel.from_pretrained(MODEL_DIR, local_files_only=True)
 
     model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
     model.load_state_dict(torch.load("model.pth", map_location=torch.device("cpu")))

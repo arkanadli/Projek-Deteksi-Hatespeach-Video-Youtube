@@ -195,6 +195,18 @@ def main():
     # Input API Key dihapus karena sudah disematkan
     # if not api_key:
     #     api_key = st.text_input(...)
+    with st.expander("ℹ️ Cara Menggunakan"):
+        st.markdown(
+            """
+            1. **Paste URL video YouTube** yang ingin dianalisis.
+            2. **Pastikan video memiliki subtitle bahasa Indonesia**.
+            3. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
+
+            **Catatan**:
+            - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
+            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video dan jumlah kalimat.
+            """
+        )
 
 
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
@@ -266,12 +278,12 @@ def main():
                 total_sentences = len(clean_sentences)
                 if total_sentences > 0:
                     percentage_problematic = (problematic_sentences_count / total_sentences) * 100
-                    st.info(f"Dari **{total_sentences} kalimat**, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai **konten bermasalah** (Ujaran Kebencian / Abusive).")
+                    st.error(f"Dari **{total_sentences} kalimat**, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai **konten bermasalah** (Ujaran Kebencian / Abusive).")
                 else:
                     st.warning("Tidak ada kalimat untuk dianalisis.")
 
                 if problematic_sentences_details:
-                    st.error("🚨 Berikut adalah kalimat-kalimat yang terdeteksi bermasalah:")
+                    st.info("🚨 Berikut adalah kalimat-kalimat yang terdeteksi bermasalah:")
                     for idx, detail in enumerate(problematic_sentences_details, 1):
                         st.markdown(f"---")
                         st.markdown(f"**Kalimat {idx}:** {detail['kalimat']}")

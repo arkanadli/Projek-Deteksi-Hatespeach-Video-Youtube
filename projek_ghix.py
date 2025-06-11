@@ -4,11 +4,15 @@ import torch
 import torch.nn as nn
 import numpy as np
 import os
-import gdown
-import requests
+import yt_dlp # Pastikan yt-dlp terinstal (pip install yt-dlp)
+import json
+import tempfile
+from pathlib import Path
+import urllib.parse as urlparse
+from urllib.parse import parse_qs
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
-from safetensors.torch import load_file # Import load_file untuk SafeTensors
+from safetensors.torch import load_file # Pastikan safetensors terinstal (pip install safetensors)
 
 st.set_page_config(
     page_title="Deteksi Hate Speech pada Video",
@@ -17,7 +21,7 @@ st.set_page_config(
 )
 st.title("🎥 Deteksi Hate Speech dari Video YouTube")
 
-# ✅ Arsitektur model
+# --- Bagian Arsitektur Model ---
 class IndoBERTweetBiGRU(nn.Module):
     def __init__(self, bert, hidden_size=512, num_classes=13):
         super().__init__()
@@ -31,18 +35,16 @@ class IndoBERTweetBiGRU(nn.Module):
         self.fc = nn.Linear(hidden_size * 2 + self.bert.config.hidden_size, num_classes)
 
     def forward(self, input_ids, attention_mask):
-        # Pastikan input_ids dan attention_mask ada di device yang sama dengan model
-        # Jika model di CPU, ini tidak masalah. Jika nanti di GPU, ini penting.
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        sequence_output = outputs[0]  # or outputs.last_hidden_state
-        cls_output = sequence_output[:, 0, :]  # [CLS] token
+        sequence_output = outputs[0]
+        cls_output = sequence_output[:, 0, :]
         gru_output, _ = self.gru(sequence_output)
         pooled_output = gru_output.mean(dim=1)
         combined = torch.cat((pooled_output, cls_output), dim=1)
         logits = self.fc(combined)
         return logits
 
-# 🔠 Label klasifikasi
+# --- Label Klasifikasi ---
 LABELS = [
     "HS", "Abusive", "HS_Individual", "HS_Group", "HS_Religion",
     "HS_Race", "HS_Physical", "HS_Gender", "HS_Other",
@@ -65,229 +67,595 @@ LABEL_DESCRIPTIONS = {
     "PS": "Konten Pornografi/Seksual"
 }
 
-# 🧼 Preprocessing
-def preprocessing(text):
-    string = text.lower()
-    string = re.sub(r"\n", "", string)
-    string = re.sub(r",", " , ", string)
-    string = re.sub(r"!", " ! ", string)
-    string = re.sub(r"\(", " ( ", string)
-    string = re.sub(r"\)", " ) ", string)
-    string = re.sub(r"\?", " ? ", string)
-    string = re.sub(r"\s{2,}", " ", string)
-    string = string.strip()
-    string = re.sub(r'[^A-Za-z\s`"]', " ", string)
-    return string
+# --- YouTubeTranscriptProcessor dari Kode Lokal Anda ---
+class YouTubeTranscriptProcessor:
+    def __init__(self, tokenizer_path, model_path, model_name="indolem/indobertweet-base-uncased",
+                 hidden_size=512, num_classes=13):
+        """
+        Inisialisasi processor dengan path tokenizer dan model untuk analisis transkrip YouTube
 
-# 🔎 Ambil ID dari URL YouTube
-def extract_video_id(url):
-    patterns = [
-        r"(?:v=|\/)([0-9A-Za-z_-]{11}).*",
-        r"youtu\.be\/([0-9A-Za-z_-]{11})",
-        r"youtube\.com\/embed\/([0-9A-Za-z_-]{11})",
-        r"youtube\.com\/watch\?v=([0-9A-Za-z_-]{11})"
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, url)
-        if match:
-            return match.group(1)
-    return None
+        Args:
+            tokenizer_path (str): Path ke folder tokenizer IndoBERTweet lokal
+            model_path (str): Path ke file model .pth atau .safetensors
+            model_name (str): Nama model BERT untuk inisialisasi arsitektur (jika tidak lokal, gunakan nama HF)
+            hidden_size (int): Hidden size untuk GRU layer
+            num_classes (int): Jumlah kelas output
+        """
+        self.tokenizer_path = tokenizer_path
+        self.model_path = model_path
+        self.model_name = model_name
+        self.hidden_size = hidden_size
+        self.num_classes = num_classes
+        self.tokenizer = None
+        self.model = None
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-# 🌐 Ambil transcript dari SearchAPI.io
-def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[Dict]]:
-    try:
-        url = "https://www.searchapi.io/api/v1/search"
-        params = {
-            "engine": "youtube_transcripts",
-            "video_id": video_id,
-            "lang": "id",
-            "api_key": api_key
-        }
-        response = requests.get(url, params=params, timeout=15)
-        response.raise_for_status()
-        data = response.json()
-        return data.get("transcripts", [])
-    except Exception as e:
-        st.error(f"Gagal mengambil transcript: {str(e)}")
+        # Label mapping untuk 13 kelas (sudah ada di LABELS global)
+        self.label_mapping = {i: label for i, label in enumerate(LABELS)}
+
+        # Load tokenizer dan model
+        self.load_tokenizer_and_model()
+
+    @st.cache_resource # Gunakan cache Streamlit untuk menghindari loading berulang
+    def load_tokenizer_and_model(self):
+        st.info(f"Menggunakan device: {self.device}")
+        try:
+            # Menggunakan path lokal untuk tokenizer
+            if os.path.exists(self.tokenizer_path):
+                st.info(f"📥 Memuat tokenizer dari path lokal: {self.tokenizer_path}")
+                self.tokenizer = AutoTokenizer.from_pretrained(self.tokenizer_path)
+                bert = AutoModel.from_pretrained(self.tokenizer_path).to(self.device)
+            else:
+                st.warning(f"Folder tokenizer lokal tidak ditemukan di {self.tokenizer_path}. Mengunduh tokenizer online sebagai fallback.")
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
+                bert = AutoModel.from_pretrained(self.model_name).to(self.device)
+            st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
+
+            # Inisialisasi arsitektur model
+            self.model = IndoBERTweetBiGRU(
+                bert=bert, # Gunakan instance bert yang sudah dimuat
+                hidden_size=self.hidden_size,
+                num_classes=self.num_classes
+            )
+
+            # Load state dict dari file model
+            if not os.path.exists(self.model_path):
+                st.error(f"Model file tidak ditemukan: {self.model_path}")
+                raise FileNotFoundError(f"Model file tidak ditemukan: {self.model_path}")
+
+            st.info(f"🔒 Memuat bobot model dari: {self.model_path}")
+            try:
+                # Cek apakah file .safetensors
+                if self.model_path.endswith(".safetensors"):
+                    state_dict = load_file(self.model_path)
+                else: # Anggap sebagai .pth
+                    state_dict = torch.load(self.model_path, map_location=self.device)
+
+                # Handle berbagai format checkpoint (seperti di kode lokal Anda)
+                if isinstance(state_dict, dict):
+                    if 'model_state_dict' in state_dict:
+                        self.model.load_state_dict(state_dict['model_state_dict'])
+                    elif 'state_dict' in state_dict:
+                        self.model.load_state_dict(state_dict['state_dict'])
+                    else:
+                        self.model.load_state_dict(state_dict)
+                else:
+                    self.model.load_state_dict(state_dict)
+
+                self.model.to(self.device) # Pindahkan model ke device yang benar
+                self.model.eval() # Set ke evaluation mode
+                st.success(f"✅ Model IndoBERTweetBiGRU berhasil dimuat dari: {self.model_path}!")
+
+            except Exception as e:
+                st.error(f"❌ Error loading model weights: {e}")
+                st.info("💡 Tips: Pastikan parameter model_name, hidden_size, dan num_classes sesuai dengan model yang disimpan. Pastikan juga file model tidak korup.")
+                raise
+
+        except Exception as e:
+            st.error(f"Error inisialisasi model/tokenizer: {e}")
+            raise
+
+    def extract_video_id(self, url):
+        # Implementasi dari kode lokal Anda
+        if "v=" in url:
+            video_id = url.split("v=")[-1].split("&")[0]
+            return video_id
+
+        patterns = [
+            r'(?:youtube\.com\/watch\?v=|youtu\.be\/|youtube\.com\/embed\/)([^&\n?#]+)',
+            r'youtube\.com\/watch\?.*v=([^&\n?#]+)'
+        ]
+        for pattern in patterns:
+            match = re.search(pattern, url)
+            if match:
+                return match.group(1)
+        if len(url) == 11 and re.match(r'^[a-zA-Z0-9_-]+$', url):
+            return url
         return None
 
-# 📦 Download model dan tokenizer
-@st.cache_resource
-def load_model_tokenizer():
-    try:
-        # Tentukan device (CPU atau GPU jika tersedia)
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        st.info(f"Menggunakan device: {device}")
+    def get_youtube_transcript_ytdlp(self, video_url_or_id, languages=['id', 'en']):
+        # Implementasi dari kode lokal Anda
+        try:
+            video_id = self.extract_video_id(video_url_or_id)
+            if not video_id:
+                video_url = video_url_or_id if video_url_or_id.startswith('http') else f"http://www.youtube.com/watch?v={video_url_or_id}"
+                video_id = video_url_or_id # fallback
+            else:
+                video_url = f"http://www.youtube.com/watch?v={video_id}"
 
-        # Tokenizer: Menggunakan versi online dari Hugging Face
-        st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...")
-        tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
-        # Model BERT dasar juga perlu dimuat dan dipindahkan ke device
-        bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased").to(device)
-        st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
+            st.info(f"🔍 Mengambil transkrip untuk video: {video_url}")
 
-        # 📦 Download model BiGRU (format .safetensors)
-        model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_" # ID file final_model.safetensors
-        safetensors_path = "final_model.safetensors"
-        safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
+            ydl_opts = {
+                'writesubtitles': True,
+                'writeautomaticsub': True,
+                'subtitleslangs': languages,
+                'subtitlesformat': 'json3',
+                'skip_download': True,
+                'quiet': True,
+                'no_warnings': True,
+            }
 
-        if not os.path.exists(safetensors_path):
-            st.info("📥 Downloading model SafeTensors dari Google Drive...")
-            try:
-                gdown.download(safetensors_url, safetensors_path, quiet=False)
-                st.success("✅ Model SafeTensors berhasil didownload!")
-            except Exception as e:
-                st.error(f"❌ Gagal download model SafeTensors: {str(e)}")
-                st.info("💡 Pastikan file dapat diakses publik dan ID benar.")
-                return None, None
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                st.info("📋 Mengambil informasi video...")
+                info = ydl.extract_info(video_url, download=False)
 
-        # Initialize model
-        model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
+                video_id = info.get('id', video_id)
+                title = info.get('title', 'Unknown Title')
+                duration = info.get('duration', 0)
 
-        # Load model weights from .safetensors
-        if os.path.exists(safetensors_path):
-            st.info("🔒 Loading model menggunakan SafeTensors...")
-            try:
-                state_dict = load_file(safetensors_path)
-                model.load_state_dict(state_dict)
-                # Pindahkan keseluruhan model ke device yang sama
-                model.to(device)
-                st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!")
-            except Exception as e:
-                st.error(f"❌ Gagal memuat model dari SafeTensors: {str(e)}")
-                st.info("💡 Pastikan file SafeTensors tidak korup dan arsitektur model cocok.")
-                return None, None
-        else:
-            st.error("❌ File model SafeTensors tidak ditemukan. Pastikan telah diunduh.")
-            return None, None
+                st.write(f"  Judul: {title}")
+                st.write(f"  Durasi: {duration} detik")
+                st.write(f"  Video ID: {video_id}")
 
-        model.eval()
-        return model, tokenizer, device # Kembalikan juga device
-    except Exception as e:
-        st.error(f"Error loading model/tokenizer: {str(e)}")
-        # Ini akan memberikan traceback lengkap untuk debugging
-        import traceback
-        st.exception(traceback.format_exc())
-        return None, None, None # Sesuaikan nilai kembalian jika ada error
+                subtitles = info.get('subtitles', {})
+                automatic_captions = info.get('automatic_captions', {})
 
-# 🎯 Main App
+                st.write(f"  Subtitle manual: {list(subtitles.keys())}")
+                st.write(f"  Subtitle otomatis: {list(automatic_captions.keys())}")
+
+                transcript_data = None
+                used_language = None
+                is_automatic = False
+
+                for lang in languages:
+                    if lang in subtitles:
+                        st.success(f"✓ Menggunakan subtitle manual: {lang}")
+                        transcript_data = subtitles[lang]
+                        used_language = lang
+                        is_automatic = False
+                        break
+
+                if not transcript_data:
+                    for lang in languages:
+                        if lang in automatic_captions:
+                            st.success(f"✓ Menggunakan subtitle otomatis: {lang}")
+                            transcript_data = automatic_captions[lang]
+                            used_language = lang
+                            is_automatic = True
+                            break
+
+                if not transcript_data:
+                    available_subs = list(subtitles.keys()) + list(automatic_captions.keys())
+                    if available_subs:
+                        lang = available_subs[0]
+                        if lang in subtitles:
+                            transcript_data = subtitles[lang]
+                            is_automatic = False
+                        else:
+                            transcript_data = automatic_captions[lang]
+                            is_automatic = True
+                        used_language = lang
+                        st.warning(f"⚠ Menggunakan bahasa yang tersedia: {lang} (Bukan pilihan utama)")
+
+                if not transcript_data:
+                    raise Exception("Tidak ada subtitle yang tersedia untuk video ini")
+
+                st.info("📥 Mengunduh subtitle...")
+                subtitle_url = None
+                for format_info in transcript_data:
+                    if format_info.get('ext') == 'json3':
+                        subtitle_url = format_info.get('url')
+                        break
+                if not subtitle_url and transcript_data:
+                    subtitle_url = transcript_data[0].get('url')
+
+                if not subtitle_url:
+                    raise Exception("URL subtitle tidak ditemukan")
+
+                import urllib.request
+                import json
+
+                with urllib.request.urlopen(subtitle_url) as response:
+                    subtitle_content = response.read().decode('utf-8')
+
+                subtitle_json = json.loads(subtitle_content)
+                events = subtitle_json.get('events', [])
+
+                segments = []
+                all_texts = []
+
+                for event in events:
+                    start_time = event.get('tStartMs', 0) / 1000.0
+                    duration = event.get('dDurationMs', 0) / 1000.0
+                    text_parts = []
+                    if 'segs' in event:
+                        for seg in event['segs']:
+                            if 'utf8' in seg:
+                                text_parts.append(seg['utf8'])
+                    text = ''.join(text_parts).strip()
+
+                    if text and text != '\n':
+                        segments.append({
+                            'start': start_time,
+                            'duration': duration,
+                            'text': text
+                        })
+                        all_texts.append(text)
+
+                if not segments:
+                    raise Exception("Tidak ada teks yang diekstrak dari subtitle")
+
+                full_text = ' '.join(all_texts)
+                sentences = re.split(r'(?<=[.!?])\s+', full_text)
+                clean_sentences = [re.sub(r'\s+', ' ', sentence).strip()
+                                   for sentence in sentences if sentence.strip()]
+
+                result = {
+                    'video_id': video_id,
+                    'video_url': video_url,
+                    'title': title,
+                    'language': used_language,
+                    'language_code': used_language,
+                    'transcript_type': 'automatic' if is_automatic else 'manual',
+                    'is_generated': is_automatic,
+                    'full_text': full_text,
+                    'clean_sentences': clean_sentences,
+                    'segments': segments,
+                    'total_segments': len(segments),
+                    'total_sentences': len(clean_sentences),
+                    'total_duration': duration
+                }
+
+                st.success(f"✓ Transkrip berhasil diambil!")
+                st.write(f"  Bahasa: {used_language}")
+                st.write(f"  Tipe: {'Otomatis' if is_automatic else 'Manual'}")
+                st.write(f"  Segmen: {result['total_segments']}")
+                st.write(f"  Kalimat: {result['total_sentences']}")
+                st.write(f"  Panjang teks: {len(full_text)} karakter")
+
+                return result
+
+        except Exception as e:
+            st.error(f"❌ Error mengambil transkrip dengan yt-dlp: {e}")
+            raise Exception(f"Gagal mengambil transkrip: {e}")
+
+    def preprocessing(self, text):
+        # Implementasi dari kode lokal Anda
+        string = text.lower()
+        string = re.sub(r"\n", "", string)
+        string = re.sub(r",", " , ", string)
+        string = re.sub(r"!", " ! ", string)
+        string = re.sub(r"\(", " ( ", string)
+        string = re.sub(r"\)", " ) ", string)
+        string = re.sub(r"\?", " ? ", string)
+        string = re.sub(r"\s{2,}", " ", string)
+        string = string.strip()
+        string = re.sub(r'[^A-Za-z\s`"]', " ", string)
+        return string
+
+    def tokenize_text(self, text, max_length=192): # Sesuaikan max_length dengan yang digunakan model Anda
+        # Implementasi dari kode lokal Anda
+        try:
+            encoded = self.tokenizer.encode_plus(
+                text,
+                add_special_tokens=True,
+                max_length=max_length,
+                padding='max_length',
+                truncation=True,
+                return_attention_mask=True,
+                return_tensors='pt'
+            )
+            return encoded
+        except Exception as e:
+            st.error(f"✗ Error dalam tokenisasi: {e}")
+            raise
+
+    def predict_text(self, text, threshold=0.5):
+        # Implementasi dari kode lokal Anda
+        try:
+            cleaned_text = self.preprocessing(text)
+            tokens = self.tokenize_text(cleaned_text)
+
+            # Pastikan input tensor berada di device yang sama dengan model
+            tokens = {key: val.to(self.device) for key, val in tokens.items()}
+
+            with torch.no_grad():
+                logits = self.model(tokens['input_ids'], tokens['attention_mask'])
+                probabilities = torch.sigmoid(logits)
+                predictions = (probabilities > threshold).int()
+
+                probs_numpy = probabilities.cpu().numpy().flatten()
+                preds_numpy = predictions.cpu().numpy().flatten()
+
+            predicted_labels = []
+            label_details = {}
+
+            for i, (prob, pred) in enumerate(zip(probs_numpy, preds_numpy)):
+                label_name = self.label_mapping[i]
+                label_details[label_name] = {
+                    'probability': float(prob),
+                    'predicted': bool(pred)
+                }
+                if pred == 1:
+                    predicted_labels.append(label_name)
+
+            result = {
+                'original_text': text,
+                'cleaned_text': cleaned_text,
+                'predicted_labels': predicted_labels,
+                'binary_predictions': preds_numpy.tolist(),
+                'probabilities': probs_numpy.tolist(),
+                'label_details': label_details,
+                'threshold_used': threshold
+            }
+            return result
+        except Exception as e:
+            st.error(f"✗ Error dalam prediksi: {e}")
+            raise
+
+    def analyze_youtube_video(self, video_url_or_id, threshold=0.5, segment_analysis=False, languages=['id', 'en']):
+        # Implementasi dari kode lokal Anda
+        try:
+            st.info("🎬 Memulai analisis video YouTube...")
+            transcript_data = self.get_youtube_transcript_ytdlp(video_url_or_id, languages)
+
+            st.info("\n🔍 Menganalisis transkrip keseluruhan...")
+            overall_result = self.predict_text(transcript_data['full_text'], threshold)
+
+            segment_results = []
+            if segment_analysis and transcript_data['segments']:
+                st.info(f"\n🔍 Menganalisis {len(transcript_data['segments'])} segment...")
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+
+                for i, segment in enumerate(transcript_data['segments']):
+                    if len(segment['text'].strip()) > 0:
+                        segment_pred = self.predict_text(segment['text'], threshold)
+                        segment_result = {
+                            'segment_index': i,
+                            'start_time': segment['start'],
+                            'duration': segment.get('duration', 0),
+                            'text': segment['text'],
+                            'prediction': segment_pred
+                        }
+                        segment_results.append(segment_result)
+                    progress_bar.progress((i + 1) / len(transcript_data['segments']))
+                    status_text.text(f"Progress analisis segment: {i + 1}/{len(transcript_data['segments'])}")
+                status_text.empty() # Clear the status text after completion
+
+            final_result = {
+                'video_info': {
+                    'video_id': transcript_data['video_id'],
+                    'video_url': transcript_data['video_url'],
+                    'title': transcript_data.get('title', 'Unknown Title'),
+                    'language': transcript_data['language'],
+                    'language_code': transcript_data['language_code'],
+                    'transcript_type': transcript_data['transcript_type'],
+                    'is_generated': transcript_data['is_generated'],
+                    'total_segments': transcript_data['total_segments'],
+                    'total_sentences': transcript_data['total_sentences'],
+                    'total_duration': transcript_data['total_duration']
+                },
+                'transcript': {
+                    'full_text': transcript_data['full_text'],
+                    'clean_sentences': transcript_data['clean_sentences'],
+                    'text_length': len(transcript_data['full_text'])
+                },
+                'overall_analysis': overall_result,
+                'segment_analysis': segment_results if segment_analysis else None,
+                'summary': self.generate_summary(overall_result, segment_results if segment_analysis else None)
+            }
+            return final_result
+
+        except Exception as e:
+            st.error(f"❌ Error dalam analisis video: {e}")
+            raise
+
+    def generate_summary(self, overall_result, segment_results=None):
+        # Implementasi dari kode lokal Anda
+        summary = {
+            'overall_status': 'CLEAN',
+            'risk_level': 'LOW',
+            'detected_categories': overall_result['predicted_labels'],
+            'total_positive_labels': len(overall_result['predicted_labels']),
+            'highest_probability': max(overall_result['probabilities']) if overall_result['probabilities'] else 0
+        }
+
+        if any(label.startswith('HS') for label in overall_result['predicted_labels']):
+            summary['overall_status'] = 'HATE_SPEECH_DETECTED'
+            if 'HS_Strong' in overall_result['predicted_labels']:
+                summary['risk_level'] = 'HIGH'
+            elif 'HS_Moderate' in overall_result['predicted_labels']:
+                summary['risk_level'] = 'MEDIUM'
+            elif 'HS_Weak' in overall_result['predicted_labels']:
+                summary['risk_level'] = 'LOW-MEDIUM'
+
+        elif 'Abusive' in overall_result['predicted_labels']:
+            summary['overall_status'] = 'ABUSIVE_CONTENT'
+            summary['risk_level'] = 'MEDIUM'
+
+        elif 'PS' in overall_result['predicted_labels']:
+            summary['overall_status'] = 'SEXUAL_CONTENT'
+            summary['risk_level'] = 'MEDIUM'
+
+        if segment_results:
+            problematic_segments = []
+            for segment in segment_results:
+                if segment['prediction']['predicted_labels']:
+                    problematic_segments.append({
+                        'start_time': segment['start_time'],
+                        'text': segment['text'][:100] + '...' if len(segment['text']) > 100 else segment['text'],
+                        'labels': segment['prediction']['predicted_labels']
+                    })
+            summary['problematic_segments_count'] = len(problematic_segments)
+            summary['problematic_segments'] = problematic_segments[:5]
+        return summary
+
+# --- Main App Logic (Streamlit) ---
 def main():
-    # API Key input
-    api_key = st.secrets.get("searchapi_key")
-    if not api_key:
-        api_key = st.text_input(
-            "🔑 SearchAPI Key",
-            placeholder="Masukkan API key SearchAPI.io Anda",
-            type="password",
-            help="Dapatkan API key gratis di https://www.searchapi.io/"
+    # Konfigurasi path dan parameter model (sesuaikan dengan setup Anda)
+    # PASTIKAN PATH INI SESUAI DENGAN LOKASI FILE DI LINGKUNGAN DEPLOYMENT STREAMLIT ANDA
+    # Jika Anda mendeploy di Streamlit Community Cloud, pastikan file-file ini di-upload
+    # ke repo GitHub Anda dan pathnya relatif.
+    tokenizer_dir = "indobertweet-base-uncased" # Anggap ini ada di root folder Streamlit Anda
+    model_file_pth = "final_model.pth" # Atau "final_model.safetensors" jika Anda sudah konversi
+
+    # Untuk testing lokal dengan path absolut Windows:
+    # tokenizer_dir = "G:\\03. Kerjaan\\kodingan TA\\indobertweet-base-uncased"
+    # model_file_pth = "G:\\03. Kerjaan\\kodingan TA\\final_model.pth"
+
+    # Inisialisasi processor hanya sekali
+    @st.cache_resource
+    def get_processor(tokenizer_path, model_path):
+        return YouTubeTranscriptProcessor(
+            tokenizer_path=tokenizer_path,
+            model_path=model_path,
+            model_name="indolem/indobertweet-base-uncased", # Gunakan nama Hugging Face untuk fallback
+            hidden_size=512,
+            num_classes=13
         )
 
-    # YouTube URL input
+    # Inisialisasi processor
+    processor = get_processor(tokenizer_dir, model_file_pth)
+
+
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
 
-    if youtube_url and api_key:
-        video_id = extract_video_id(youtube_url)
+    if youtube_url:
+        video_id = processor.extract_video_id(youtube_url)
         if video_id:
-            # Show video preview
-            st.video(f"https://www.youtube.com/watch?v={video_id}")
+            st.video(f"http://www.youtube.com/watch?v={video_id}") # Perbaiki format URL video preview
 
-            # Load model
-            with st.spinner("📦 Loading model dan tokenizer..."):
-                model, tokenizer, device = load_model_tokenizer() # Tangkap device
+            # Tambahkan opsi untuk threshold dan segment analysis
+            col1, col2 = st.columns(2)
+            with col1:
+                threshold = st.slider("Threshold Deteksi (0.0 - 1.0)", 0.0, 1.0, 0.5, 0.05)
+            with col2:
+                segment_analysis_choice = st.checkbox("Analisis Per Segmen", value=False)
 
-            if model is None or tokenizer is None or device is None:
-                st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
-                return
+            lang_input = st.text_input("Bahasa Subtitle (pisahkan dengan koma, cth: id,en)", value="id,en").strip()
+            languages = [lang.strip() for lang in lang_input.split(',')]
 
             if st.button("🚀 Analisis Video"):
-                # Get transcript
-                with st.spinner("📥 Mengambil transcript dari video..."):
-                    transcript = get_transcript_from_searchapi(video_id, api_key)
-
-                if not transcript:
-                    st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle bahasa Indonesia.")
-                    return
-
-                # Process transcript
-                full_text = " ".join([entry['text'] for entry in transcript])
-                st.success("✅ Transcript berhasil diambil!")
-
-                # Show transcript preview
-                with st.expander("📄 Cuplikan Transcript"):
-                    st.text_area("", full_text[:1000] + ("..." if len(full_text) > 1000 else ""), height=200)
-
-                # Preprocess and predict
-                with st.spinner("🔍 Menganalisis hate speech..."):
-                    cleaned_text = preprocessing(full_text)
-                    inputs = tokenizer(
-                        cleaned_text,
-                        return_tensors="pt",
-                        truncation=True,
-                        padding=True,
-                        max_length=192
+                st.subheader("📊 Hasil Deteksi Hate Speech:")
+                try:
+                    result = processor.analyze_youtube_video(
+                        youtube_url,
+                        threshold=threshold,
+                        segment_analysis=segment_analysis_choice,
+                        languages=languages
                     )
 
-                    # Pastikan input tensor berada di device yang sama dengan model
-                    inputs = {key: val.to(device) for key, val in inputs.items()}
+                    # Tampilkan hasil di Streamlit
+                    st.success("✅ Analisis Selesai!")
 
-                    with torch.no_grad():
-                        logits = model(**inputs)
-                        probs = torch.sigmoid(logits)
-                        predictions = (probs > 0.5).int().numpy()[0]
+                    # Ringkasan
+                    summary = result['summary']
+                    st.markdown("---")
+                    st.markdown(f"### Ringkasan Analisis")
+                    st.write(f"**Status Keseluruhan**: {summary['overall_status']}")
+                    st.write(f"**Tingkat Risiko**: {summary['risk_level']}")
+                    st.write(f"**Total Kategori Terdeteksi**: {summary['total_positive_labels']}/{processor.num_classes}")
+                    st.write(f"**Probabilitas Tertinggi**: {summary['highest_probability']:.4f}")
 
-                # Display results
-                st.subheader("📊 Hasil Deteksi Hate Speech:")
-                detected = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
+                    if summary['overall_status'] != 'CLEAN':
+                        st.error(f"🚨 **PERINGATAN**: {summary['overall_status']}")
+                        st.write(f"**Kategori Terdeteksi**: {', '.join([LABEL_DESCRIPTIONS[l] for l in summary['detected_categories']])}")
+                    else:
+                        st.success("🎉 **Konten Bersih dari Ujaran Kebencian dan Konten Bermasalah**")
 
-                if detected:
-                    st.error("🚨 Terdeteksi hate speech!")
-                    for label in detected:
-                        prob_score = float(probs[0][LABELS.index(label)] * 100)
-                        st.write(f"- 🔴 **{LABEL_DESCRIPTIONS[label]}** ({prob_score:.1f}%)")
-                else:
-                    st.success("✅ Tidak terdeteksi hate speech")
+                    st.markdown("---")
+                    st.markdown(f"### Detail Analisis Keseluruhan")
+                    overall = result['overall_analysis']
+                    if overall['predicted_labels']:
+                        for label in overall['predicted_labels']:
+                            prob_score = overall['label_details'][label]['probability'] * 100
+                            st.write(f"- 🔴 **{LABEL_DESCRIPTIONS[label]}** ({prob_score:.1f}%)")
+                    else:
+                        st.write("Tidak ada kategori ujaran kebencian/konten bermasalah yang terdeteksi secara keseluruhan.")
 
-                # Show detailed scores
-                with st.expander("📈 Detail Skor Semua Kategori"):
-                    for i, (label, desc) in enumerate(zip(LABELS, [LABEL_DESCRIPTIONS[l] for l in LABELS])):
-                        score = float(probs[0][i] * 100)
-                        st.write(f"**{desc}**: {score:.1f}%")
+                    with st.expander("📈 Detail Skor Semua Kategori"):
+                        for label, details in overall['label_details'].items():
+                            status_icon = "✓" if details['predicted'] else "✗"
+                            st.write(f"{status_icon} **{LABEL_DESCRIPTIONS[label]}**: {details['probability']:.4f}")
+
+                    if segment_analysis_choice and result['segment_analysis']:
+                        st.markdown("---")
+                        st.markdown(f"### Analisis Per Segmen")
+                        problematic_count = summary.get('problematic_segments_count', 0)
+                        st.write(f"**Total Segmen Bermasalah**: {problematic_count}/{result['video_info']['total_segments']}")
+
+                        if problematic_count > 0:
+                            st.info("Berikut adalah beberapa segmen yang terdeteksi bermasalah:")
+                            for i, seg in enumerate(summary.get('problematic_segments', []), 1):
+                                st.markdown(f"**Segmen {i}. Waktu: {seg['start_time']:.1f}s**")
+                                st.write(f"Teks: `{seg['text']}`")
+                                st.write(f"Label Terdeteksi: {', '.join([LABEL_DESCRIPTIONS[l] for l in seg['labels']])}")
+                                st.markdown("---")
+                        else:
+                            st.info("Tidak ada segmen spesifik yang terdeteksi bermasalah.")
+
+                    with st.expander("📄 Transkrip Lengkap"):
+                        st.text_area("Teks Transkrip", result['transcript']['full_text'], height=300)
+
+                except Exception as e:
+                    st.error(f"❌ Terjadi kesalahan saat menganalisis video: {e}")
+                    st.info("Pastikan:")
+                    st.markdown("- Video memiliki subtitle (manual atau otomatis) dalam bahasa yang dipilih.")
+                    st.markdown("- URL video YouTube valid dan bersifat publik.")
+                    st.markdown("- Koneksi internet stabil.")
+                    st.markdown("- `yt-dlp` dan dependensi lainnya terinstal dengan benar (`pip install yt-dlp transformers torch safetensors numpy`).")
+
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
 
-    elif youtube_url and not api_key:
-        st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
-
-    # Instructions
-    with st.expander("ℹ️ Cara Menggunakan"):
+    st.markdown("---")
+    with st.expander("ℹ️ Cara Menggunakan dan Konfigurasi Lokal"):
         st.markdown(
             """
-            1. **Dapatkan API key** dari [SearchAPI.io](https://www.searchapi.io/) (gratis)
-            2. **Masukkan API key** di field yang tersedia.
-            3. **Paste URL video YouTube** yang ingin dianalisis.
-            4. **Pastikan video memiliki subtitle bahasa Indonesia**.
-            5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
+            1.  **Siapkan File Model dan Tokenizer Lokal**:
+                * Pastikan Anda memiliki folder tokenizer `indobertweet-base-uncased` dan file model `final_model.pth` (atau `final_model.safetensors` jika sudah dikonversi) di **lokasi yang dapat diakses oleh aplikasi Streamlit**.
+                * **Sangat disarankan** untuk meletakkan folder `indobertweet-base-uncased` dan file `final_model.pth` (atau `.safetensors`) di **direktori yang sama** dengan file `.py` Streamlit ini, atau di sub-folder yang relevan.
+                * Jika Anda menggunakan Streamlit Community Cloud (atau platform hosting lainnya), Anda harus menyertakan folder dan file ini dalam repositori GitHub Anda.
+                * **Edit kode ini**: Ubah nilai `tokenizer_dir` dan `model_file_pth` di awal fungsi `main()` agar sesuai dengan lokasi file Anda (misalnya: `tokenizer_dir = "my_models/indobertweet-base-uncased"`).
 
-            **Catatan**:
-            - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
-            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video.
+            2.  **Instal Dependensi**:
+                ```bash
+                pip install streamlit torch transformers safetensors numpy yt-dlp
+                ```
+                *Pastikan versi **PyTorch >= 2.6.0** (lihat panduan di bawah jika bermasalah).*
+
+            3.  **Masukkan URL Video YouTube**: Paste URL video yang ingin Anda analisis.
+            4.  **Atur Opsi Analisis**: Pilih `Threshold Deteksi` dan apakah ingin `Analisis Per Segmen`.
+            5.  **Klik 'Analisis Video'**: Tunggu prosesnya selesai. Durasi analisis akan bervariasi tergantung panjang transkrip.
             """
         )
 
-    with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):
+    st.markdown("---")
+    with st.expander("🔧 Panduan Konversi Manual ke SafeTensors (Direkomendasikan!)"):
         st.markdown(
             """
-            Jika Anda memiliki model PyTorch dalam format `.pth` dan ingin mengonversinya ke SafeTensors untuk keamanan dan kompatibilitas yang lebih baik:
+            Jika Anda memiliki model PyTorch dalam format `.pth` dan ingin mengonversinya ke SafeTensors untuk keamanan dan efisiensi yang lebih baik:
 
             ```python
-            # Jalankan di environment dengan PyTorch >= 2.6
+            # Jalankan di lingkungan dengan PyTorch >= 2.6 dan safetensors terinstal
             from safetensors.torch import save_file
             import torch
             import os
 
-            # Ganti dengan path ke file .pth Anda
-            pth_file_path = "nama_model_anda.pth"
-            safetensors_output_path = "nama_model_anda.safetensors"
+            # Ganti dengan path lengkap ke file .pth Anda
+            pth_file_path = "path/to/your/final_model.pth"
+            safetensors_output_path = "path/to/save/final_model.safetensors"
 
             if not os.path.exists(pth_file_path):
                 print(f"Error: File '{pth_file_path}' tidak ditemukan.")
@@ -299,21 +667,21 @@ def main():
                     print("Model berhasil dimuat. Mengonversi ke SafeTensors...")
                     save_file(state_dict, safetensors_output_path)
                     print(f"✅ Konversi berhasil! File '{safetensors_output_path}' telah dibuat.")
-                    print(f"Sekarang upload '{safetensors_output_path}' ke Google Drive Anda dan perbarui ID-nya di kode Streamlit.")
+                    print(f"Sekarang Anda dapat mengganti `model_file_pth` di kode Streamlit dengan path ke file .safetensors ini.")
                 except Exception as e:
                     print(f"❌ Gagal mengonversi model: {e}")
                     print("Pastikan file .pth tidak korup dan versi PyTorch Anda terbaru (>= 2.6 direkomendasikan).")
             ```
 
             **Langkah-langkah:**
-            1. Pastikan Anda memiliki PyTorch versi **2.6 atau lebih baru**: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu`
-            2. Instal pustaka SafeTensors: `pip install safetensors`
-            3. Unduh file `.pth` Anda secara manual ke komputer lokal Anda.
-            4. Buat dan jalankan skrip Python di atas (ganti `pth_file_path` dengan nama file `.pth` Anda).
-            5. Upload file `.safetensors` yang dihasilkan ke Google Drive dan dapatkan ID berbagi barunya.
-            6. Perbarui `model_safetensors_id` di kode Streamlit Anda dengan ID baru tersebut.
+            1.  Pastikan Anda memiliki PyTorch versi **2.6 atau lebih baru**: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu`
+            2.  Instal pustaka SafeTensors: `pip install safetensors`
+            3.  Unduh file `.pth` Anda secara manual ke komputer lokal Anda.
+            4.  Buat dan jalankan skrip Python di atas (ganti `pth_file_path` dan `safetensors_output_path` sesuai).
+            5.  Perbarui `model_file_pth` di kode Streamlit Anda dengan path ke file `.safetensors` yang baru.
             """
         )
+
 
 if __name__ == "__main__":
     main()

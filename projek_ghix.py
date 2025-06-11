@@ -8,6 +8,7 @@ import gdown
 import requests
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
+from safetensors.torch import load_file, save_file
 
 st.set_page_config(
     page_title="Deteksi Hate Speech pada Video", 
@@ -108,6 +109,27 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
         st.error(f"Gagal mengambil transcript: {str(e)}")
         return None
 
+# 🔄 Convert PyTorch model to SafeTensors (utility function)
+def convert_pth_to_safetensors(pth_path: str, safetensors_path: str):
+    """Convert .pth model to .safetensors format"""
+    try:
+        # Load the old format (this is safe since we're converting, not loading for inference)
+        state_dict = torch.load(pth_path, map_location=torch.device("cpu"))
+        
+        # Save in SafeTensors format
+        save_file(state_dict, safetensors_path)
+        st.success(f"✅ Model berhasil dikonversi ke SafeTensors: {safetensors_path}")
+        
+        # Optionally remove the old .pth file
+        if os.path.exists(pth_path):
+            os.remove(pth_path)
+            st.info("🗑️ File .pth lama telah dihapus")
+            
+        return True
+    except Exception as e:
+        st.error(f"❌ Gagal mengkonversi model: {str(e)}")
+        return False
+
 # 📦 Download model dan tokenizer dari Google Drive
 @st.cache_resource
 def load_model_tokenizer():
@@ -135,30 +157,47 @@ def load_model_tokenizer():
             tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
             bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
 
-        # 📦 Download model BiGRU (.pth)
-        model_url_id = "1OpDWxAl7bcKCm9OVb0vZCmEDZcBi424B"  # Ganti dengan ID Google Drive Anda
-        model_path = "model_bigru.pth"
+        # 📦 Download model BiGRU 
+        # Prioritize SafeTensors format
+        model_safetensors_id = "YOUR_SAFETENSORS_MODEL_ID"  # Ganti dengan ID file .safetensors
+        model_pth_id = "1OpDWxAl7bcKCm9OVb0vZCmEDZcBi424B"  # ID file .pth lama (fallback)
         
-        if not os.path.exists(model_path):
-            st.info("📥 Downloading model dari Google Drive...")
-            model_url = f"https://drive.google.com/uc?id={model_url_id}"
-            gdown.download(model_url, model_path, quiet=False)
+        safetensors_path = "model_bigru.safetensors"
+        pth_path = "model_bigru.pth"
+        
+        # Try to download SafeTensors version first
+        if not os.path.exists(safetensors_path):
+            st.info("📥 Mencoba download model SafeTensors...")
+            safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
+            
+            try:
+                # Try downloading SafeTensors version
+                gdown.download(safetensors_url, safetensors_path, quiet=False)
+            except:
+                st.warning("⚠️ SafeTensors tidak tersedia, menggunakan .pth dan mengkonversi...")
+                
+                # Fallback: download .pth and convert
+                if not os.path.exists(pth_path):
+                    st.info("📥 Downloading model .pth dari Google Drive...")
+                    pth_url = f"https://drive.google.com/uc?id={model_pth_id}"
+                    gdown.download(pth_url, pth_path, quiet=False)
+                
+                # Convert .pth to SafeTensors
+                if os.path.exists(pth_path):
+                    convert_pth_to_safetensors(pth_path, safetensors_path)
 
         # Initialize model
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
         
-        # Load model weights dengan error handling untuk PyTorch security issue
-        try:
-            # Try safe loading first
-            model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu"), weights_only=True))
-        except Exception as safe_error:
-            try:
-                # Fallback to regular loading
-                model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
-            except Exception as regular_error:
-                st.error(f"Gagal memuat model: {regular_error}")
-                st.info("Pastikan PyTorch versi ≥2.6 atau gunakan safetensors format")
-                return None, None
+        # Load model weights using SafeTensors
+        if os.path.exists(safetensors_path):
+            st.info("🔒 Loading model menggunakan SafeTensors...")
+            state_dict = load_file(safetensors_path)
+            model.load_state_dict(state_dict)
+            st.success("✅ Model berhasil dimuat dengan SafeTensors!")
+        else:
+            st.error("❌ File model tidak ditemukan. Pastikan model telah diupload ke Google Drive.")
+            return None, None
         
         model.eval()
         return model, tokenizer
@@ -262,9 +301,27 @@ def main():
         5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai
         
         **Catatan**: 
+        - Model menggunakan format SafeTensors yang lebih aman
         - Model akan didownload otomatis dari Google Drive saat pertama kali digunakan
+        - Jika SafeTensors tidak tersedia, sistem akan mengkonversi dari format .pth
         - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video
         """)
+
+    # Conversion utility (optional, for developers)
+    with st.expander("🔧 Utility: Convert Model ke SafeTensors"):
+        st.markdown("""
+        **Untuk Developer**: Jika Anda memiliki model .pth, Anda dapat mengkonversinya ke SafeTensors:
+        """)
+        
+        if st.button("🔄 Convert .pth ke SafeTensors"):
+            pth_path = "model_bigru.pth"
+            safetensors_path = "model_bigru.safetensors"
+            
+            if os.path.exists(pth_path):
+                if convert_pth_to_safetensors(pth_path, safetensors_path):
+                    st.success("✅ Konversi berhasil! Upload file .safetensors ke Google Drive Anda.")
+            else:
+                st.error("❌ File .pth tidak ditemukan")
 
 if __name__ == "__main__":
     main()

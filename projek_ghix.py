@@ -225,7 +225,7 @@ def main():
                 st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
                 return
 
-            if st.button("🚀 Analisis Video"):
+            if st.button("🚀 Analisis Video", use_container_width=True)::
                 with st.spinner("📥 Mengambil transcript dari video..."):
                     transcript_entries = get_transcript_from_searchapi(video_id, api_key)
 
@@ -307,19 +307,7 @@ def main():
     # elif youtube_url and not api_key:
     #     st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
 
-    # Instructions
-    with st.expander("ℹ️ Cara Menggunakan"):
-        st.markdown(
-            """
-            1. **Paste URL video YouTube** yang ingin dianalisis.
-            2. **Pastikan video memiliki subtitle bahasa Indonesia**.
-            3. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
-
-            **Catatan**:
-            - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
-            - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video dan jumlah kalimat.
-            """
-        )
+    
 
     # 🔧 Panduan Konversi Manual (Jika diperlukan) dihapus
     # with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):

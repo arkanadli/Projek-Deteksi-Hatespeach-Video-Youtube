@@ -8,14 +8,7 @@ import gdown
 import requests
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
-from safetensors.torch import load_file
-import yt_dlp
-import json
-import tempfile
-from pathlib import Path
-import urllib.parse as urlparse
-from urllib.parse import parse_qs
-
+from safetensors.torch import load_file # Import load_file untuk SafeTensors
 
 st.set_page_config(
     page_title="Deteksi Hate Speech pada Video",
@@ -38,9 +31,11 @@ class IndoBERTweetBiGRU(nn.Module):
         self.fc = nn.Linear(hidden_size * 2 + self.bert.config.hidden_size, num_classes)
 
     def forward(self, input_ids, attention_mask):
+        # Pastikan input_ids dan attention_mask ada di device yang sama dengan model
+        # Jika model di CPU, ini tidak masalah. Jika nanti di GPU, ini penting.
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
-        sequence_output = outputs[0]
-        cls_output = sequence_output[:, 0, :]
+        sequence_output = outputs[0]  # or outputs.last_hidden_state
+        cls_output = sequence_output[:, 0, :]  # [CLS] token
         gru_output, _ = self.gru(sequence_output)
         pooled_output = gru_output.mean(dim=1)
         combined = torch.cat((pooled_output, cls_output), dim=1)
@@ -98,136 +93,20 @@ def extract_video_id(url):
             return match.group(1)
     return None
 
-def get_youtube_transcript_ytdlp(video_url_or_id, languages=['id', 'en']):
+# 🌐 Ambil transcript dari SearchAPI.io
+def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[Dict]]:
     try:
-        video_id = extract_video_id(video_url_or_id)
-        if not video_id:
-            video_url = video_url_or_id if video_url_or_id.startswith('http') else f"https://www.youtube.com/watch?v={video_url_or_id}"
-            video_id = video_url_or_id
-        else:
-            video_url = f"https://www.youtube.com/watch?v={video_id}"
-
-        ydl_opts = {
-            'writesubtitles': True,
-            'writeautomaticsub': True,
-            'subtitleslangs': languages,
-            'subtitlesformat': 'json3',
-            'skip_download': True,
-            'quiet': True,
-            'no_warnings': True,
+        url = "https://www.searchapi.io/api/v1/search"
+        params = {
+            "engine": "youtube_transcripts",
+            "video_id": video_id,
+            "lang": "id",
+            "api_key": api_key
         }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(video_url, download=False)
-
-            video_id = info.get('id', video_id)
-            title = info.get('title', 'Unknown Title')
-            duration = info.get('duration', 0)
-
-            subtitles = info.get('subtitles', {})
-            automatic_captions = info.get('automatic_captions', {})
-
-            transcript_data = None
-            used_language = None
-            is_automatic = False
-
-            for lang in languages:
-                if lang in subtitles:
-                    transcript_data = subtitles[lang]
-                    used_language = lang
-                    is_automatic = False
-                    break
-
-            if not transcript_data:
-                for lang in languages:
-                    if lang in automatic_captions:
-                        transcript_data = automatic_captions[lang]
-                        used_language = lang
-                        is_automatic = True
-                        break
-
-            if not transcript_data:
-                available_subs = list(subtitles.keys()) + list(automatic_captions.keys())
-                if available_subs:
-                    lang = available_subs[0]
-                    if lang in subtitles:
-                        transcript_data = subtitles[lang]
-                        is_automatic = False
-                    else:
-                        transcript_data = automatic_captions[lang]
-                        is_automatic = True
-                    used_language = lang
-
-            if not transcript_data:
-                raise Exception("Tidak ada subtitle yang tersedia untuk video ini")
-
-            subtitle_url = None
-            for format_info in transcript_data:
-                if format_info.get('ext') == 'json3':
-                    subtitle_url = format_info.get('url')
-                    break
-
-            if not subtitle_url and transcript_data:
-                subtitle_url = transcript_data[0].get('url')
-
-            if not subtitle_url:
-                raise Exception("URL subtitle tidak ditemukan")
-
-            with urllib.request.urlopen(subtitle_url) as response:
-                subtitle_content = response.read().decode('utf-8')
-
-            subtitle_json = json.loads(subtitle_content)
-            events = subtitle_json.get('events', [])
-
-            segments = []
-            all_texts = []
-
-            for event in events:
-                start_time = event.get('tStartMs', 0) / 1000.0
-                duration = event.get('dDurationMs', 0) / 1000.0
-
-                text_parts = []
-                if 'segs' in event:
-                    for seg in event['segs']:
-                        if 'utf8' in seg:
-                            text_parts.append(seg['utf8'])
-
-                text = ''.join(text_parts).strip()
-
-                if text and text != '\n':
-                    segments.append({
-                        'start': start_time,
-                        'duration': duration,
-                        'text': text
-                    })
-                    all_texts.append(text)
-
-            if not segments:
-                raise Exception("Tidak ada teks yang diekstrak dari subtitle")
-
-            full_text = ' '.join(all_texts)
-
-            sentences = re.split(r'(?<=[.!?])\s+', full_text)
-            clean_sentences = [re.sub(r'\s+', ' ', sentence).strip()
-                               for sentence in sentences if sentence.strip()]
-
-            result = {
-                'video_id': video_id,
-                'video_url': video_url,
-                'title': title,
-                'language': used_language,
-                'language_code': used_language,
-                'transcript_type': 'automatic' if is_automatic else 'manual',
-                'is_generated': is_automatic,
-                'full_text': full_text,
-                'clean_sentences': clean_sentences,
-                'segments': segments,
-                'total_segments': len(segments),
-                'total_sentences': len(clean_sentences),
-                'total_duration': duration
-            }
-            return result
-
+        response = requests.get(url, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        return data.get("transcripts", [])
     except Exception as e:
         st.error(f"Gagal mengambil transcript: {str(e)}")
         return None
@@ -236,15 +115,19 @@ def get_youtube_transcript_ytdlp(video_url_or_id, languages=['id', 'en']):
 @st.cache_resource
 def load_model_tokenizer():
     try:
+        # Tentukan device (CPU atau GPU jika tersedia)
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         st.info(f"Menggunakan device: {device}")
 
+        # Tokenizer: Menggunakan versi online dari Hugging Face
         st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...")
         tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
+        # Model BERT dasar juga perlu dimuat dan dipindahkan ke device
         bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased").to(device)
         st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
 
-        model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_"
+        # 📦 Download model BiGRU (format .safetensors)
+        model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_" # ID file final_model.safetensors
         safetensors_path = "final_model.safetensors"
         safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
 
@@ -258,13 +141,16 @@ def load_model_tokenizer():
                 st.info("💡 Pastikan file dapat diakses publik dan ID benar.")
                 return None, None, None
 
+        # Initialize model
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
 
+        # Load model weights from .safetensors
         if os.path.exists(safetensors_path):
             st.info("🔒 Loading model menggunakan SafeTensors...")
             try:
                 state_dict = load_file(safetensors_path)
                 model.load_state_dict(state_dict)
+                # Pindahkan keseluruhan model ke device yang sama
                 model.to(device)
                 st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!")
             except Exception as e:
@@ -276,29 +162,30 @@ def load_model_tokenizer():
             return None, None, None
 
         model.eval()
-        return model, tokenizer, device
+        return model, tokenizer, device # Kembalikan juga device
     except Exception as e:
         st.error(f"Error loading model/tokenizer: {str(e)}")
+        # Ini akan memberikan traceback lengkap untuk debugging
         import traceback
         st.exception(traceback.format_exc())
-        return None, None, None
+        return None, None, None # Sesuaikan nilai kembalian jika ada error
 
 # 🎯 Main App
 def main():
-    # API Key input - Removed as yt-dlp doesn't require an API key
-    # api_key = st.secrets.get("searchapi_key")
-    # if not api_key:
-    #     api_key = st.text_input(
-    #         "🔑 SearchAPI Key",
-    #         placeholder="Masukkan API key SearchAPI.io Anda",
-    #         type="password",
-    #         help="Dapatkan API key gratis di https://www.searchapi.io/"
-    #     )
+    # API Key input
+    api_key = st.secrets.get("searchapi_key")
+    if not api_key:
+        api_key = st.text_input(
+            "🔑 SearchAPI Key",
+            placeholder="Masukkan API key SearchAPI.io Anda",
+            type="password",
+            help="Dapatkan API key gratis di https://www.searchapi.io/"
+        )
 
     # YouTube URL input
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
 
-    if youtube_url: # and api_key: - Removed api_key dependency
+    if youtube_url and api_key:
         video_id = extract_video_id(youtube_url)
         if video_id:
             # Show video preview
@@ -306,7 +193,7 @@ def main():
 
             # Load model
             with st.spinner("📦 Loading model dan tokenizer..."):
-                model, tokenizer, device = load_model_tokenizer()
+                model, tokenizer, device = load_model_tokenizer() # Tangkap device
 
             if model is None or tokenizer is None or device is None:
                 st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
@@ -315,13 +202,14 @@ def main():
             if st.button("🚀 Analisis Video"):
                 # Get transcript
                 with st.spinner("📥 Mengambil transcript dari video..."):
-                    transcript_data = get_youtube_transcript_ytdlp(youtube_url)
+                    transcript = get_transcript_from_searchapi(video_id, api_key)
 
-                if not transcript_data:
-                    st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle.")
+                if not transcript:
+                    st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle bahasa Indonesia.")
                     return
 
-                full_text = transcript_data['full_text']
+                # Process transcript
+                full_text = " ".join([entry['text'] for entry in transcript])
                 st.success("✅ Transcript berhasil diambil!")
 
                 # Show transcript preview
@@ -339,6 +227,7 @@ def main():
                         max_length=192
                     )
 
+                    # Pastikan input tensor berada di device yang sama dengan model
                     inputs = {key: val.to(device) for key, val in inputs.items()}
 
                     with torch.no_grad():
@@ -366,13 +255,18 @@ def main():
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
 
+    elif youtube_url and not api_key:
+        st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
+
     # Instructions
     with st.expander("ℹ️ Cara Menggunakan"):
         st.markdown(
             """
-            1. **Paste URL video YouTube** yang ingin dianalisis.
-            2. **Pastikan video memiliki subtitle**.
-            3. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
+            1. **Dapatkan API key** dari [SearchAPI.io](https://www.searchapi.io/) (gratis)
+            2. **Masukkan API key** di field yang tersedia.
+            3. **Paste URL video YouTube** yang ingin dianalisis.
+            4. **Pastikan video memiliki subtitle bahasa Indonesia**.
+            5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
 
             **Catatan**:
             - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
@@ -423,6 +317,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-# Pastikan Anda telah menginstal library yang diperlukan:
-# pip install streamlit transformers torch safetensors yt-dlp

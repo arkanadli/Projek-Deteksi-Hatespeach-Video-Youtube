@@ -31,6 +31,8 @@ class IndoBERTweetBiGRU(nn.Module):
         self.fc = nn.Linear(hidden_size * 2 + self.bert.config.hidden_size, num_classes)
 
     def forward(self, input_ids, attention_mask):
+        # Pastikan input_ids dan attention_mask ada di device yang sama dengan model
+        # Jika model di CPU, ini tidak masalah. Jika nanti di GPU, ini penting.
         outputs = self.bert(input_ids=input_ids, attention_mask=attention_mask)
         sequence_output = outputs[0]  # or outputs.last_hidden_state
         cls_output = sequence_output[:, 0, :]  # [CLS] token
@@ -113,13 +115,15 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
 @st.cache_resource
 def load_model_tokenizer():
     try:
-        # Tokenizer: Menggunakan versi online untuk kemudahan dan menghindari masalah gdown.download_folder
-        # Jika Anda ingin menyimpan tokenizer secara lokal, Anda perlu mengunduh file-file individunya
-        # atau memastikan folder di GDrive dapat di-zip dan diunduh dengan gdown.download_folder.
-        # Untuk saat ini, mari kita prioritaskan agar aplikasi bisa berjalan.
+        # Tentukan device (CPU atau GPU jika tersedia)
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        st.info(f"Menggunakan device: {device}")
+
+        # Tokenizer: Menggunakan versi online dari Hugging Face
         st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...")
         tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
-        bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
+        # Model BERT dasar juga perlu dimuat dan dipindahkan ke device
+        bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased").to(device)
         st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
 
         # 📦 Download model BiGRU (format .safetensors)
@@ -146,7 +150,9 @@ def load_model_tokenizer():
             try:
                 state_dict = load_file(safetensors_path)
                 model.load_state_dict(state_dict)
-                st.success("✅ Model berhasil dimuat dari SafeTensors!")
+                # Pindahkan keseluruhan model ke device yang sama
+                model.to(device)
+                st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!")
             except Exception as e:
                 st.error(f"❌ Gagal memuat model dari SafeTensors: {str(e)}")
                 st.info("💡 Pastikan file SafeTensors tidak korup dan arsitektur model cocok.")
@@ -156,14 +162,13 @@ def load_model_tokenizer():
             return None, None
 
         model.eval()
-        return model, tokenizer
-
+        return model, tokenizer, device # Kembalikan juga device
     except Exception as e:
         st.error(f"Error loading model/tokenizer: {str(e)}")
-        # Untuk debugging, Anda bisa menampilkan traceback lengkap
-        # import traceback
-        # st.exception(traceback.format_exc())
-        return None, None
+        # Ini akan memberikan traceback lengkap untuk debugging
+        import traceback
+        st.exception(traceback.format_exc())
+        return None, None, None # Sesuaikan nilai kembalian jika ada error
 
 # 🎯 Main App
 def main():
@@ -188,9 +193,9 @@ def main():
 
             # Load model
             with st.spinner("📦 Loading model dan tokenizer..."):
-                model, tokenizer = load_model_tokenizer()
+                model, tokenizer, device = load_model_tokenizer() # Tangkap device
 
-            if model is None or tokenizer is None:
+            if model is None or tokenizer is None or device is None:
                 st.error("❌ Gagal memuat model. Periksa koneksi dan file model.")
                 return
 
@@ -221,6 +226,9 @@ def main():
                         padding=True,
                         max_length=192
                     )
+
+                    # Pastikan input tensor berada di device yang sama dengan model
+                    inputs = {key: val.to(device) for key, val in inputs.items()}
 
                     with torch.no_grad():
                         logits = model(**inputs)

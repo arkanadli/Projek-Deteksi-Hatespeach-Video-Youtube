@@ -161,7 +161,7 @@ def load_model_tokenizer():
         return None, None, None
 
 # Fungsi untuk memprediksi satu kalimat
-def predict_sentence(text, model, tokenizer, device, threshold=0.5):
+def predict_sentence(text, model, tokenizer, device, threshold=0.1):
     cleaned_text = preprocessing(text)
     inputs = tokenizer(
         cleaned_text,

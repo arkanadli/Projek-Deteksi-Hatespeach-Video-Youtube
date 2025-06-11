@@ -3,9 +3,10 @@ import re
 import torch
 import torch.nn as nn
 import numpy as np
-from youtube_transcript_api import YouTubeTranscriptApi
-from transformers import AutoTokenizer, AutoModel
 import os
+import gdown
+from transformers import AutoTokenizer, AutoModel
+from youtube_transcript_api import YouTubeTranscriptApi
 
 st.set_page_config(page_title="Deteksi Hate Speech pada Video", layout="centered")
 st.title("🎥 Deteksi Hate Speech dari Video YouTube")
@@ -62,16 +63,30 @@ def extract_video_id(url):
         return match.group(1)
     return None
 
-# 📦 Load model dan tokenizer
+# 📦 Download model dan tokenizer dari Google Drive
 @st.cache_resource
 def load_model_tokenizer():
-    MODEL_DIR = os.path.join(os.getcwd(), "indobertweet-base-uncased")
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_DIR, local_files_only=True)
-    bert = AutoModel.from_pretrained(MODEL_DIR, local_files_only=True)
+    # 📁 Download folder tokenizer (shared as zipped manually)
+    tokenizer_zip_id = "14xqjAOJDw57wq9XpnYK8sWRQk-KO4uIu"
+    tokenizer_dir = "indobertweet-tokenizer"
+
+    if not os.path.exists(tokenizer_dir):
+        zip_url = f"https://drive.google.com/uc?id={tokenizer_zip_id}"
+        gdown.download_folder(zip_url, output=tokenizer_dir, quiet=False, use_cookies=False)
+
+    tokenizer = AutoTokenizer.from_pretrained(tokenizer_dir, local_files_only=True)
+    bert = AutoModel.from_pretrained(tokenizer_dir, local_files_only=True)
+
+    # 📦 Download model BiGRU (.pth)
+    model_url = "https://drive.google.com/uc?id=1OpDWxAl7bcKCm9OVb0vZCmEDZcBi424B"
+    model_path = "model_bigru.pth"
+    if not os.path.exists(model_path):
+        gdown.download(model_url, model_path, quiet=False)
 
     model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
-    model.load_state_dict(torch.load("model.pth", map_location=torch.device("cpu")))
+    model.load_state_dict(torch.load(model_path, map_location=torch.device("cpu")))
     model.eval()
+
     return model, tokenizer
 
 # 🎯 Input dari user
@@ -90,19 +105,14 @@ if youtube_url:
             st.success("✅ Transcript berhasil diambil!")
             st.text_area("📄 Cuplikan Transcript:", full_text[:500], height=200)
 
-            # 🧹 Preprocessing
             cleaned_text = preprocessing(full_text)
-
-            # 🧪 Tokenisasi (maksimal 192 token)
             inputs = tokenizer(cleaned_text, return_tensors="pt", truncation=True, padding=True, max_length=192)
 
-            # 🔍 Inference
             with torch.no_grad():
                 logits = model(**inputs)
                 probs = torch.sigmoid(logits)
                 predictions = (probs > 0.5).int().numpy()[0]
 
-            # 📊 Tampilkan hasil
             st.subheader("📊 Hasil Deteksi Hate Speech:")
             detected = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
             if detected:

@@ -82,12 +82,25 @@ def extract_video_id(url):
     return None
 
 # Ambil transcript otomatis
+# Ambil transcript otomatis (dengan dukungan proxy)
 def get_transcript(video_id):
+    proxies = {
+        "https": "http://143.42.66.91:80"
+    }
+    
     try:
-        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'])
+        # Coba ambil transcript pakai proxy
+        transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'], proxies=proxies)
         return transcript
-    except:
-        return None
+    except Exception as e:
+        try:
+            # Fallback tanpa proxy
+            transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=['id'])
+            return transcript
+        except Exception as fallback_error:
+            print("Gagal mengambil transcript:", fallback_error)
+            return None
+
 
 # Load model dan tokenizer
 @st.cache_resource

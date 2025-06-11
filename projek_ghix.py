@@ -222,7 +222,7 @@ def main():
                 is_not_auto_generated = any(lang["name"] == "Indonesian"for lang in available_languages)
 
                 if not is_not_auto_generated:
-                    st.warning("⚠️ Transkrip ini dihasilkan secara otomatis dan mungkin mengandung kesalahan.")
+                    st.warning("⚠️ Transkrip ini merupakan Auto-Generated dan mungkin mengandung kesalahan.")
 
                 full_text = " ".join([entry['text'] + ". " for entry in transcript_entries]) # Menambahkan titik di setiap entry
                 st.success("✅ Transcript berhasil diambil! ")

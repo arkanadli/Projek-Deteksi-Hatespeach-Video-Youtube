@@ -1,0 +1,5 @@
+streamlit
+torch
+transformers
+gdown
+youtube_transcript_api

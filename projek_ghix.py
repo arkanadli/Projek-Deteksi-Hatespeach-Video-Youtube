@@ -112,23 +112,9 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
 # 🔄 Convert PyTorch model to SafeTensors (utility function)
 def convert_pth_to_safetensors(pth_path: str, safetensors_path: str):
     """Convert .pth model to .safetensors format"""
-    try:
-        # Load the old format (this is safe since we're converting, not loading for inference)
-        state_dict = torch.load(pth_path, map_location=torch.device("cpu"))
-        
-        # Save in SafeTensors format
-        save_file(state_dict, safetensors_path)
-        st.success(f"✅ Model berhasil dikonversi ke SafeTensors: {safetensors_path}")
-        
-        # Optionally remove the old .pth file
-        if os.path.exists(pth_path):
-            os.remove(pth_path)
-            st.info("🗑️ File .pth lama telah dihapus")
-            
-        return True
-    except Exception as e:
-        st.error(f"❌ Gagal mengkonversi model: {str(e)}")
-        return False
+    st.error("❌ Konversi otomatis tidak tersedia karena vulnerability PyTorch.")
+    st.info("💡 Silakan konversi model secara manual dengan PyTorch ≥2.6 atau gunakan file SafeTensors yang sudah ada.")
+    return False
 
 # 📦 Download model dan tokenizer dari Google Drive
 @st.cache_resource
@@ -158,33 +144,29 @@ def load_model_tokenizer():
             bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased")
 
         # 📦 Download model BiGRU 
-        # Prioritize SafeTensors format
+        # HANYA gunakan SafeTensors format
         model_safetensors_id = "YOUR_SAFETENSORS_MODEL_ID"  # Ganti dengan ID file .safetensors
-        model_pth_id = "1OpDWxAl7bcKCm9OVb0vZCmEDZcBi424B"  # ID file .pth lama (fallback)
-        
         safetensors_path = "model_bigru.safetensors"
-        pth_path = "model_bigru.pth"
         
-        # Try to download SafeTensors version first
+        # Download SafeTensors version
         if not os.path.exists(safetensors_path):
-            st.info("📥 Mencoba download model SafeTensors...")
+            st.info("📥 Downloading model SafeTensors dari Google Drive...")
+            
+            # Cek apakah ID sudah diubah
+            if model_safetensors_id == "YOUR_SAFETENSORS_MODEL_ID":
+                st.error("❌ Harap ganti 'YOUR_SAFETENSORS_MODEL_ID' dengan ID Google Drive yang sebenarnya")
+                st.info("💡 Upload model dalam format SafeTensors ke Google Drive dan dapatkan sharing ID-nya")
+                return None, None
+            
             safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
             
             try:
-                # Try downloading SafeTensors version
                 gdown.download(safetensors_url, safetensors_path, quiet=False)
-            except:
-                st.warning("⚠️ SafeTensors tidak tersedia, menggunakan .pth dan mengkonversi...")
-                
-                # Fallback: download .pth and convert
-                if not os.path.exists(pth_path):
-                    st.info("📥 Downloading model .pth dari Google Drive...")
-                    pth_url = f"https://drive.google.com/uc?id={model_pth_id}"
-                    gdown.download(pth_url, pth_path, quiet=False)
-                
-                # Convert .pth to SafeTensors
-                if os.path.exists(pth_path):
-                    convert_pth_to_safetensors(pth_path, safetensors_path)
+                st.success("✅ Model SafeTensors berhasil didownload!")
+            except Exception as e:
+                st.error(f"❌ Gagal download model SafeTensors: {str(e)}")
+                st.info("💡 Pastikan file dapat diakses publik dan ID benar")
+                return None, None
 
         # Initialize model
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
@@ -301,27 +283,41 @@ def main():
         5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai
         
         **Catatan**: 
-        - Model menggunakan format SafeTensors yang lebih aman
+        - Model HARUS dalam format SafeTensors (.safetensors)
+        - Konversi dari .pth harus dilakukan secara manual dengan PyTorch ≥2.6
         - Model akan didownload otomatis dari Google Drive saat pertama kali digunakan
-        - Jika SafeTensors tidak tersedia, sistem akan mengkonversi dari format .pth
         - Proses analisis membutuhkan waktu beberapa detik tergantung panjang video
         """)
 
-    # Conversion utility (optional, for developers)
-    with st.expander("🔧 Utility: Convert Model ke SafeTensors"):
+    # Conversion utility (for manual conversion with PyTorch ≥2.6)
+    with st.expander("🔧 Manual Conversion Guide"):
         st.markdown("""
-        **Untuk Developer**: Jika Anda memiliki model .pth, Anda dapat mengkonversinya ke SafeTensors:
+        **Untuk mengkonversi model .pth ke SafeTensors secara manual:**
+        
+        ```python
+        # Jalankan di environment dengan PyTorch ≥2.6
+        from safetensors.torch import save_file
+        import torch
+        
+        # Load model .pth (aman dengan PyTorch ≥2.6)
+        state_dict = torch.load("model_bigru.pth", 
+                               map_location="cpu", 
+                               weights_only=True)
+        
+        # Save sebagai SafeTensors
+        save_file(state_dict, "model_bigru.safetensors")
+        print("✅ Konversi berhasil!")
+        ```
+        
+        **Langkah-langkah:**
+        1. Upgrade PyTorch: `pip install torch>=2.6`
+        2. Install SafeTensors: `pip install safetensors`
+        3. Jalankan script konversi di atas
+        4. Upload `model_bigru.safetensors` ke Google Drive
+        5. Dapatkan sharing ID dan update kode
         """)
         
-        if st.button("🔄 Convert .pth ke SafeTensors"):
-            pth_path = "model_bigru.pth"
-            safetensors_path = "model_bigru.safetensors"
-            
-            if os.path.exists(pth_path):
-                if convert_pth_to_safetensors(pth_path, safetensors_path):
-                    st.success("✅ Konversi berhasil! Upload file .safetensors ke Google Drive Anda.")
-            else:
-                st.error("❌ File .pth tidak ditemukan")
+        st.warning("⚠️ Konversi otomatis dinonaktifkan karena vulnerability PyTorch <2.6")
 
 if __name__ == "__main__":
     main()

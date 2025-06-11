@@ -7,12 +7,14 @@ import os
 import requests
 import json
 from transformers import AutoTokenizer, AutoModel
-from youtube_transcript_api import YouTubeTranscriptApi
 import zipfile
 import tempfile
 import warnings
 import time
 from urllib.parse import urlparse, parse_qs
+import random
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 # Suppress warnings
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -124,193 +126,196 @@ def extract_video_id(url):
         
     return None
 
-# 📦 Fungsi untuk mendapatkan bahasa transcript yang tersedia
-def get_available_languages(video_id):
-    """Mendapatkan daftar bahasa transcript yang tersedia"""
-    try:
-        transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-        available_languages = []
-        
-        for transcript in transcript_list:
-            lang_info = {
-                'language': transcript.language,
-                'language_code': transcript.language_code,
-                'is_generated': transcript.is_generated,
-                'is_translatable': transcript.is_translatable
-            }
-            available_languages.append(lang_info)
-        
-        return available_languages
-    except Exception as e:
-        return []
+# 🌐 Fungsi untuk bypass IP blocking dengan multiple methods
+def create_session_with_retries():
+    """Membuat session dengan retry strategy dan random user agent"""
+    session = requests.Session()
+    
+    # Daftar User-Agent yang berbeda
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:89.0) Gecko/20100101 Firefox/89.0',
+    ]
+    
+    # Set random user agent
+    session.headers.update({
+        'User-Agent': random.choice(user_agents),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+    })
+    
+    # Setup retry strategy
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+    
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
 
-# 🎬 Fungsi transcript yang diperbaiki dengan error handling yang lebih baik
-def get_transcript_robust(video_id):
-    """Mendapatkan transcript dengan penanganan error yang lebih baik"""
+# 🎬 Alternatif method untuk mendapatkan transcript
+def get_transcript_alternative_api(video_id):
+    """Menggunakan API alternatif untuk mendapatkan transcript"""
+    try:
+        # Method 1: Coba dengan API alternatif
+        session = create_session_with_retries()
+        
+        # Tambahkan delay random untuk menghindari rate limiting
+        time.sleep(random.uniform(1, 3))
+        
+        # API endpoint alternatif (contoh)
+        api_urls = [
+            f"https://www.googleapis.com/youtube/v3/captions?part=snippet&videoId={video_id}",
+            f"https://youtubetranscript.com/api/transcript/{video_id}",
+        ]
+        
+        # Untuk demonstrasi, kita akan menggunakan method scraping sederhana
+        # Ini adalah fallback method jika YouTube Transcript API terblokir
+        
+        return None, None  # Sementara return None untuk implementasi yang lebih aman
+        
+    except Exception as e:
+        return None, None
+
+# 🎬 Fungsi utama untuk mendapatkan transcript dengan multiple fallback
+def get_transcript_with_fallback(video_id):
+    """Mendapatkan transcript dengan berbagai method fallback"""
     
     if not video_id:
         st.error("❌ Video ID tidak valid")
         return None, None
     
-    try:
-        # Validasi video ID terlebih dahulu
-        if not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id):
-            st.error("❌ Format Video ID tidak valid")
-            return None, None
-        
-        st.info("🔍 Memeriksa ketersediaan transcript...")
-        
-        # Cek ketersediaan transcript dengan timeout
-        try:
-            # Tambahkan delay untuk menghindari rate limiting
-            time.sleep(1)
-            
-            transcript_list = YouTubeTranscriptApi.list_transcripts(video_id)
-            available_languages = []
-            
-            # Kumpulkan informasi bahasa yang tersedia
-            for transcript in transcript_list:
-                available_languages.append({
-                    'language': transcript.language,
-                    'language_code': transcript.language_code,
-                    'is_generated': transcript.is_generated,
-                    'is_translatable': transcript.is_translatable,
-                    'transcript_obj': transcript
-                })
-            
-            if not available_languages:
-                st.error("❌ Video ini tidak memiliki transcript/subtitle")
-                return None, None
-            
-            # Tampilkan bahasa yang tersedia
-            st.success(f"✅ Ditemukan {len(available_languages)} bahasa transcript:")
-            for lang in available_languages:
-                status = "Manual" if not lang['is_generated'] else "Otomatis"
-                st.write(f"  • **{lang['language']}** ({lang['language_code']}) - {status}")
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            
-            if "not available" in error_msg or "disabled" in error_msg:
-                st.error("❌ Transcript tidak tersedia untuk video ini")
-                st.info("""
-                **💡 Kemungkinan penyebab:**
-                - Video tidak memiliki subtitle/caption
-                - Pemilik video menonaktifkan transcript
-                - Video bersifat private atau tidak dapat diakses
-                """)
-            elif "private" in error_msg:
-                st.error("❌ Video bersifat private atau tidak dapat diakses")
-            elif "not found" in error_msg:
-                st.error("❌ Video tidak ditemukan. Periksa kembali URL video")
-            elif "quota" in error_msg or "rate" in error_msg:
-                st.error("❌ Terlalu banyak permintaan. Silakan coba lagi dalam beberapa menit")
-            else:
-                st.error(f"❌ Error mengakses video: {str(e)}")
-            
-            return None, None
-        
-        # Prioritas bahasa untuk Indonesia
-        language_priority = ['id', 'en', 'ms', 'jv']
-        
-        transcript = None
-        used_language = None
-        
-        # Coba bahasa dengan prioritas
-        for lang_code in language_priority:
-            for lang_info in available_languages:
-                if lang_info['language_code'] == lang_code:
-                    try:
-                        st.info(f"📥 Mengambil transcript dalam bahasa: {lang_info['language']}")
-                        transcript = lang_info['transcript_obj'].fetch()
-                        used_language = lang_info['language']
-                        st.success(f"✅ Berhasil mendapatkan transcript dalam bahasa: {lang_info['language']}")
-                        break
-                    except Exception as e:
-                        st.warning(f"⚠️ Gagal mengambil transcript {lang_info['language']}: {str(e)}")
-                        continue
-            if transcript:
-                break
-        
-        # Jika masih belum ada, coba bahasa pertama yang tersedia
-        if transcript is None and available_languages:
-            try:
-                first_lang = available_languages[0]
-                st.info(f"📥 Mencoba bahasa: {first_lang['language']}")
-                transcript = first_lang['transcript_obj'].fetch()
-                used_language = first_lang['language']
-                st.success(f"✅ Berhasil mendapatkan transcript dalam bahasa: {first_lang['language']}")
-            except Exception as e:
-                st.error(f"❌ Gagal mengambil transcript: {str(e)}")
-                return None, None
-        
-        if transcript is None:
-            st.error("❌ Tidak dapat mengambil transcript dalam bahasa apapun")
-            return None, None
-            
-        return transcript, used_language
-        
-    except Exception as e:
-        error_msg = str(e)
-        st.error(f"❌ Error tidak terduga: {error_msg}")
-        
-        # Berikan saran berdasarkan jenis error
-        if "no element found" in error_msg:
-            st.info("""
-            **💡 Saran untuk mengatasi error parsing:**
-            1. Periksa koneksi internet Anda
-            2. Coba video YouTube lain yang memiliki subtitle
-            3. Tunggu beberapa menit lalu coba lagi
-            4. Pastikan URL video benar dan dapat diakses
-            """)
-        
+    # Validasi video ID
+    if not re.match(r'^[a-zA-Z0-9_-]{11}$', video_id):
+        st.error("❌ Format Video ID tidak valid")
         return None, None
+    
+    st.info("🔍 Mencoba mengambil transcript dari video...")
+    
+    # Method 1: Coba YouTube Transcript API dengan workaround
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        
+        # Tambahkan delay untuk menghindari rate limiting
+        time.sleep(random.uniform(2, 5))
+        
+        # Coba dengan berbagai bahasa
+        language_codes = ['id', 'en', 'ms', 'jv', 'auto']
+        
+        for lang_code in language_codes:
+            try:
+                if lang_code == 'auto':
+                    # Coba tanpa specify language
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id)
+                else:
+                    transcript = YouTubeTranscriptApi.get_transcript(video_id, languages=[lang_code])
+                
+                if transcript:
+                    st.success(f"✅ Berhasil mendapatkan transcript (bahasa: {lang_code})")
+                    return transcript, lang_code
+                    
+            except Exception as lang_error:
+                continue
+                
+    except Exception as api_error:
+        error_msg = str(api_error)
+        
+        if "blocked" in error_msg.lower() or "ip" in error_msg.lower():
+            st.warning("⚠️ IP diblokir oleh YouTube. Mencoba method alternatif...")
+            
+            # Method 2: Gunakan input manual dari user
+            st.info("""
+            **🔄 Solusi Alternatif - Input Manual Transcript:**
+            
+            Karena IP diblokir oleh YouTube, Anda dapat:
+            1. Buka video di YouTube
+            2. Klik tombol CC (Closed Captions) 
+            3. Klik "..." → "Buka transkrip"
+            4. Copy transcript dan paste di bawah ini
+            """)
+            
+            # Text area untuk input manual
+            manual_transcript = st.text_area(
+                "📝 Paste transcript di sini:",
+                height=200,
+                placeholder="Paste transcript dari YouTube di sini...",
+                help="Copy transcript dari YouTube dan paste di sini untuk analisis"
+            )
+            
+            if manual_transcript and len(manual_transcript.strip()) > 0:
+                st.success("✅ Transcript manual berhasil diinput!")
+                # Convert ke format yang sama dengan API
+                mock_transcript = [{"text": manual_transcript, "start": 0, "duration": 0}]
+                return mock_transcript, "manual"
+            
+            # Method 3: Gunakan demo text untuk testing
+            if st.button("🧪 Gunakan Contoh Text untuk Demo"):
+                demo_text = """
+                Halo semua, selamat datang di channel YouTube ini. 
+                Hari ini kita akan membahas topik yang sangat menarik tentang teknologi terbaru.
+                Jangan lupa untuk subscribe dan like video ini jika kalian merasa terbantu.
+                Kita akan mulai dengan pembahasan tentang artificial intelligence dan machine learning.
+                Teknologi ini sangat membantu dalam berbagai aspek kehidupan kita sehari-hari.
+                """
+                st.info("🧪 Menggunakan contoh text untuk demonstrasi")
+                mock_transcript = [{"text": demo_text, "start": 0, "duration": 0}]
+                return mock_transcript, "demo"
+            
+        else:
+            st.error(f"❌ Error lain: {error_msg}")
+    
+    return None, None
 
 # 📦 Fungsi download yang diperbaiki
 def download_file_robust(url, destination, chunk_size=8192):
     """Download file dengan error handling yang kuat"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        session = create_session_with_retries()
         
-        with requests.Session() as session:
-            session.headers.update(headers)
-            
-            # Handle Google Drive direct download
-            if 'drive.google.com' in url:
-                if 'id=' in url:
-                    file_id = url.split('id=')[1].split('&')[0]
-                else:
-                    file_id = url.split('/')[-2]
-                url = f"https://drive.google.com/uc?export=download&id={file_id}"
-            
-            response = session.get(url, stream=True, timeout=60)
-            response.raise_for_status()
-            
-            # Handle Google Drive virus scan warning
-            if 'download_warning' in response.text:
-                for key, value in response.cookies.items():
-                    if key.startswith('download_warning'):
-                        params = {'id': file_id, 'confirm': value}
-                        response = session.get(url, params=params, stream=True, timeout=60)
-                        break
-            
-            total_size = int(response.headers.get('content-length', 0))
-            
-            with open(destination, 'wb') as f:
-                downloaded = 0
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        if total_size > 0:
-                            progress = downloaded / total_size
-                            st.progress(progress)
-            
-            return True
-            
+        # Handle Google Drive direct download
+        if 'drive.google.com' in url:
+            if 'id=' in url:
+                file_id = url.split('id=')[1].split('&')[0]
+            else:
+                file_id = url.split('/')[-2]
+            url = f"https://drive.google.com/uc?export=download&id={file_id}"
+        
+        response = session.get(url, stream=True, timeout=60)
+        response.raise_for_status()
+        
+        # Handle Google Drive virus scan warning
+        if 'download_warning' in response.text:
+            for key, value in response.cookies.items():
+                if key.startswith('download_warning'):
+                    params = {'id': file_id, 'confirm': value}
+                    response = session.get(url, params=params, stream=True, timeout=60)
+                    break
+        
+        total_size = int(response.headers.get('content-length', 0))
+        
+        with open(destination, 'wb') as f:
+            downloaded = 0
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    
+                    if total_size > 0:
+                        progress = downloaded / total_size
+                        st.progress(progress)
+        
+        return True
+        
     except Exception as e:
         st.error(f"❌ Gagal mengunduh file: {str(e)}")
         return False
@@ -410,9 +415,18 @@ def main():
     st.markdown("""
     ### 📋 Cara Penggunaan:
     1. **Masukkan URL video YouTube** yang ingin dianalisis
-    2. **Sistem akan mengambil transcript** dari video (mendukung berbagai bahasa)
+    2. **Sistem akan mengambil transcript** dari video (atau input manual jika diblokir)
     3. **AI akan menganalisis konten** untuk mendeteksi ujaran kebencian
     4. **Hasil analisis** akan ditampilkan dengan kategori dan tingkat kepercayaan
+    
+    **🌐 Bahasa yang didukung:** Indonesia, Inggris, Melayu, Jawa, dan bahasa lainnya
+    """)
+    
+    # Peringatan IP blocking
+    st.warning("""
+    **⚠️ Informasi Penting:**
+    Jika sistem tidak dapat mengambil transcript otomatis (karena IP diblokir YouTube), 
+    Anda dapat menggunakan **input manual** dengan menyalin transcript langsung dari YouTube.
     """)
     
     # Input URL
@@ -422,21 +436,51 @@ def main():
         help="Tempel URL video YouTube yang ingin dianalisis ujaran kebenciannya"
     )
     
-    # Contoh URL untuk testing
-    with st.expander("🔍 Contoh URL yang Bisa Digunakan"):
+    # Contoh URL dan tutorial
+    with st.expander("🔍 Panduan Lengkap Penggunaan"):
         st.markdown("""
         **Format URL yang didukung:**
         - `https://www.youtube.com/watch?v=dQw4w9WgXcQ`
         - `https://youtu.be/dQw4w9WgXcQ`
         - `https://www.youtube.com/embed/dQw4w9WgXcQ`
         
+        **Jika IP diblokir YouTube, ikuti langkah ini:**
+        1. Buka video di YouTube
+        2. Klik tombol **CC** (Closed Captions) di video player
+        3. Klik titik tiga **"..."** → **"Buka transkrip"**
+        4. Copy semua text transcript
+        5. Paste di area input manual yang akan muncul
+        
         **Tips:**
         - Pastikan video bersifat publik (bukan private)
-        - Video harus memiliki subtitle/caption (otomatis atau manual)
-        - Untuk video baru, tunggu beberapa menit agar YouTube generate subtitle otomatis
+        - Video harus memiliki subtitle/caption
+        - Untuk video baru, tunggu beberapa menit agar YouTube generate subtitle
         """)
 
-    if youtube_url:
+    # Input manual transcript sebagai alternatif utama
+    st.markdown("### 📝 Alternatif: Input Manual Transcript")
+    manual_transcript = st.text_area(
+        "Paste transcript manual di sini (jika otomatis gagal):",
+        height=150,
+        placeholder="Copy transcript dari YouTube dan paste di sini...",
+        help="Jika sistem tidak bisa mengambil transcript otomatis, gunakan input manual ini"
+    )
+
+    # Proses berdasarkan input yang tersedia
+    process_analysis = False
+    transcript_data = None
+    transcript_source = None
+    video_id = None
+    
+    if manual_transcript and len(manual_transcript.strip()) > 0:
+        # Prioritaskan input manual
+        transcript_data = [{"text": manual_transcript, "start": 0, "duration": 0}]
+        transcript_source = "manual"
+        process_analysis = True
+        st.success("✅ Menggunakan transcript manual untuk analisis")
+        
+    elif youtube_url:
+        # Proses URL YouTube
         video_id = extract_video_id(youtube_url)
         
         if not video_id:
@@ -447,15 +491,23 @@ def main():
             - `https://youtu.be/VIDEO_ID`
             - `https://www.youtube.com/embed/VIDEO_ID`
             """)
-            return
-        
-        st.success(f"✅ Video ID berhasil dikenali: `{video_id}`")
-        
-        # Tampilkan video
-        try:
-            st.video(f"https://www.youtube.com/watch?v={video_id}")
-        except:
-            st.warning("⚠️ Tidak dapat menampilkan pratinjau video")
+        else:
+            st.success(f"✅ Video ID berhasil dikenali: `{video_id}`")
+            
+            # Tampilkan video
+            try:
+                st.video(f"https://www.youtube.com/watch?v={video_id}")
+            except:
+                st.warning("⚠️ Tidak dapat menampilkan pratinjau video")
+            
+            # Coba ambil transcript otomatis
+            transcript_data, transcript_source = get_transcript_with_fallback(video_id)
+            
+            if transcript_data:
+                process_analysis = True
+
+    # Proses analisis jika ada data transcript
+    if process_analysis and transcript_data:
         
         # Load model
         with st.spinner("🤖 Memuat model AI untuk analisis ujaran kebencian..."):
@@ -465,15 +517,12 @@ def main():
             st.error("❌ Gagal memuat model AI. Silakan coba lagi nanti.")
             return
 
-        # Dapatkan transcript
-        transcript, used_language = get_transcript_robust(video_id)
-        
-        if transcript is None:
-            return  # Error sudah ditangani di get_transcript_robust
-        
         # Proses transcript
         try:
-            full_text = " ".join([entry['text'] for entry in transcript])
+            if transcript_source == "manual":
+                full_text = transcript_data[0]["text"]
+            else:
+                full_text = " ".join([entry['text'] for entry in transcript_data])
         except Exception as e:
             st.error(f"❌ Error memproses transcript: {str(e)}")
             return
@@ -486,7 +535,7 @@ def main():
         with st.expander("📄 Pratinjau Transcript"):
             preview_text = full_text[:2000] + "..." if len(full_text) > 2000 else full_text
             st.text_area("", preview_text, height=200, disabled=True)
-            st.caption(f"Total karakter: {len(full_text):,} | Bahasa: {used_language}")
+            st.caption(f"Total karakter: {len(full_text):,} | Sumber: {transcript_source}")
 
         # Analisis dengan AI
         st.info("🧠 Menganalisis konten dengan AI...")
@@ -530,7 +579,7 @@ def main():
         detected_labels = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
         
         if detected_labels:
-            st.error("🚨 **PERINGATAN: Video berpotensi mengandung ujaran kebencian!**")
+            st.error("🚨 **PERINGATAN: Konten berpotensi mengandung ujaran kebencian!**")
             
             col1, col2 = st.columns(2)
             
@@ -555,15 +604,15 @@ def main():
             # Rekomendasi
             st.markdown("### 💡 Rekomendasi:")
             st.warning("""
-            - **Hati-hati** dalam menonton atau membagikan video ini
+            - **Hati-hati** dalam menonton atau membagikan konten ini
             - **Pertimbangkan konteks** dan tujuan konten sebelum mengambil tindakan
             - **Laporkan** ke platform jika konten melanggar aturan komunitas
             - **Diskusikan secara konstruktif** jika konten digunakan untuk edukasi
             """)
             
         else:
-            st.success("✅ **Tidak terdeteksi ujaran kebencian dalam video ini**")
-            st.info("🎉 Video ini tampaknya aman dari konten ujaran kebencian berdasarkan analisis AI")
+            st.success("✅ **Tidak terdeteksi ujaran kebencian dalam konten ini**")
+            st.info("🎉 Konten ini tampaknya aman dari ujaran kebencian berdasarkan analisis AI")
         
         # Analisis detail
         with st.expander("📊 Analisis Detail Semua Kategori"):
@@ -596,8 +645,8 @@ def main():
         with st.expander("ℹ️ Informasi Teknis"):
             st.markdown(f"""
             **Detail Analisis:**
-            - **Video ID:** `{video_id}`
-            - **Bahasa Transcript:** {used_language}
+            - **Video ID:** `{video_id if video_id else 'Manual Input'}`
+            - **Sumber Transcript:** {transcript_source}
             - **Panjang Teks Asli:** {len(full_text):,} karakter
             - **Panjang Teks Setelah Preprocessing:** {len(cleaned_text):,} karakter
             - **Model:** IndoBERTweet + BiGRU
@@ -613,7 +662,7 @@ def main():
     st.markdown("""
     <div style='text-align: center; color: #666; font-size: 0.8em;'>
         <p>🤖 Aplikasi Deteksi Ujaran Kebencian menggunakan AI</p>
-        <p>Dibuat untuk membantu mengidentifikasi konten yang berpotensi berbahaya</p>
+        <p>Mendukung input otomatis dan manual untuk mengatasi pembatasan IP</p>
     </div>
     """, unsafe_allow_html=True)
 

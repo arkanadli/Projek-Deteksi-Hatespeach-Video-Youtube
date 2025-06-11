@@ -8,7 +8,7 @@ import gdown
 import requests
 from typing import List, Dict, Optional
 from transformers import AutoTokenizer, AutoModel
-from safetensors.torch import load_file # Import load_file untuk SafeTensors
+from safetensors.torch import load_file
 
 st.set_page_config(
     page_title="Deteksi Hate Speech pada Video",
@@ -114,22 +114,22 @@ def get_transcript_from_searchapi(video_id: str, api_key: str) -> Optional[List[
 def load_model_tokenizer():
     try:
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        st.info(f"Menggunakan device: {device}")
+        # st.info(f"Menggunakan device: {device}") # Dikomen
 
-        st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...")
+        # st.info("📥 Mengunduh tokenizer dari Hugging Face (online)...") # Dikomen
         tokenizer = AutoTokenizer.from_pretrained("indolem/indobertweet-base-uncased")
         bert = AutoModel.from_pretrained("indolem/indobertweet-base-uncased").to(device)
-        st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!")
+        # st.success("✅ Tokenizer dan model BERT dasar berhasil dimuat!") # Dikomen
 
         model_safetensors_id = "1SfyGkTgRxjx3JEwZ79zJuz5wciOH6d6_"
         safetensors_path = "final_model.safetensors"
         safetensors_url = f"https://drive.google.com/uc?id={model_safetensors_id}"
 
         if not os.path.exists(safetensors_path):
-            st.info("📥 Downloading model SafeTensors dari Google Drive...")
+            # st.info("📥 Downloading model SafeTensors dari Google Drive...") # Dikomen
             try:
                 gdown.download(safetensors_url, safetensors_path, quiet=False)
-                st.success("✅ Model SafeTensors berhasil didownload!")
+                # st.success("✅ Model SafeTensors berhasil didownload!") # Dikomen
             except Exception as e:
                 st.error(f"❌ Gagal download model SafeTensors: {str(e)}")
                 st.info("💡 Pastikan file dapat diakses publik dan ID benar.")
@@ -138,12 +138,12 @@ def load_model_tokenizer():
         model = IndoBERTweetBiGRU(bert=bert, hidden_size=512, num_classes=13)
 
         if os.path.exists(safetensors_path):
-            st.info("🔒 Loading model menggunakan SafeTensors...")
+            # st.info("🔒 Loading model menggunakan SafeTensors...") # Dikomen
             try:
                 state_dict = load_file(safetensors_path)
                 model.load_state_dict(state_dict)
                 model.to(device)
-                st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!")
+                # st.success("✅ Model berhasil dimuat dari SafeTensors dan dipindahkan ke device!") # Dikomen
             except Exception as e:
                 st.error(f"❌ Gagal memuat model dari SafeTensors: {str(e)}")
                 st.info("💡 Pastikan file SafeTensors tidak korup dan arsitektur model cocok.")
@@ -161,7 +161,7 @@ def load_model_tokenizer():
         return None, None, None
 
 # Fungsi untuk memprediksi satu kalimat
-def predict_sentence(text, model, tokenizer, device, threshold=0.1):
+def predict_sentence(text, model, tokenizer, device, threshold=0.5):
     cleaned_text = preprocessing(text)
     inputs = tokenizer(
         cleaned_text,
@@ -179,27 +179,29 @@ def predict_sentence(text, model, tokenizer, device, threshold=0.1):
         predictions = (probs > threshold).int().numpy()[0]
 
     detected_labels = [LABELS[i] for i, val in enumerate(predictions) if val == 1]
-    
+
     # Detail probabilitas untuk setiap label
     label_probs = {LABELS[i]: float(probs[0][i]) for i in range(len(LABELS))}
-    
+
     return detected_labels, label_probs
 
 
 # 🎯 Main App
 def main():
-    api_key = st.secrets.get("searchapi_key")
-    if not api_key:
-        api_key = st.text_input(
-            "🔑 SearchAPI Key",
-            placeholder="Masukkan API key SearchAPI.io Anda",
-            type="password",
-            help="Dapatkan API key gratis di https://www.searchapi.io/"
-        )
+    # SearchAPI key disematkan langsung di sini
+    api_key = "Quq35w6JgdtV1fJcnACFK4qF"
+    # st.secrets.get("searchapi_key") # Dikomen atau dihapus
+
+    # Input API Key dihapus karena sudah disematkan
+    # if not api_key:
+    #     api_key = st.text_input(...)
+
 
     youtube_url = st.text_input("🔗 Masukkan URL Video YouTube:")
 
-    if youtube_url and api_key:
+    # Kondisi 'if youtube_url and api_key:' diubah menjadi hanya 'if youtube_url:'
+    # karena api_key sudah disematkan dan selalu ada.
+    if youtube_url:
         video_id = extract_video_id(youtube_url)
         if video_id:
             st.video(f"https://www.youtube.com/watch?v={video_id}")
@@ -219,7 +221,6 @@ def main():
                     st.error("❌ Gagal mengambil transcript. Pastikan video memiliki subtitle bahasa Indonesia.")
                     return
 
-                # Gabungkan semua teks untuk tampilan preview dan juga untuk membagi per kalimat
                 full_text = " ".join([entry['text'] for entry in transcript_entries])
                 st.success("✅ Transcript berhasil diambil!")
 
@@ -227,49 +228,45 @@ def main():
                     st.text_area("", full_text[:1000] + ("..." if len(full_text) > 1000 else ""), height=200)
 
                 st.subheader("🔍 Menganalisis Konten Video per Kalimat...")
-                
-                # Memecah transkrip menjadi kalimat-kalimat
-                # Gunakan regex yang lebih robust untuk memecah kalimat
+
                 sentences = re.split(r'(?<=[.!?])\s+|\n', full_text)
-                # Filter kalimat kosong dan trim spasi
                 clean_sentences = [s.strip() for s in sentences if s.strip()]
-                
+
                 if not clean_sentences:
                     st.warning("Tidak ada kalimat yang dapat dianalisis dari transkrip ini.")
                     return
 
                 problematic_sentences_count = 0
                 problematic_sentences_details = []
-                
+
                 progress_text = "Analisis kalimat sedang berjalan. Mohon tunggu..."
                 my_bar = st.progress(0, text=progress_text)
 
                 for i, sentence in enumerate(clean_sentences):
                     detected_labels, label_probs = predict_sentence(sentence, model, tokenizer, device)
-                    
+
                     # Logika untuk kalimat "bermasalah": setiap label selain 'PS'
                     is_problematic = any(label != "PS" for label in detected_labels)
-                    
+
                     if is_problematic:
                         problematic_sentences_count += 1
                         problematic_sentences_details.append({
                             "kalimat": sentence,
-                            "label_terdeteksi": [LABEL_DESCRIPTIONS[label] for label in detected_labels],
+                            "label_terdeteksi": [LABEL_DESCRIPTIONS[label] for label in detected_labels if label != "PS"], # Hanya tampilkan label selain PS
                             "probabilitas": {LABEL_DESCRIPTIONS[k]: f"{v:.1%}" for k, v in label_probs.items()}
                         })
-                    
-                    # Update progress bar
+
                     progress_percentage = (i + 1) / len(clean_sentences)
                     my_bar.progress(progress_percentage, text=f"{progress_text} {int(progress_percentage * 100)}%")
 
-                my_bar.empty() # Hapus progress bar setelah selesai
+                my_bar.empty()
 
                 st.subheader("📊 Ringkasan Hasil Deteksi Hate Speech:")
-                
+
                 total_sentences = len(clean_sentences)
                 if total_sentences > 0:
                     percentage_problematic = (problematic_sentences_count / total_sentences) * 100
-                    st.info(f"Dari {total_sentences} kalimat, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai konten bermasalah (selain konten positif).")
+                    st.info(f"Dari **{total_sentences} kalimat**, **{problematic_sentences_count} kalimat ({percentage_problematic:.1f}%)** terklasifikasi sebagai **konten bermasalah** (Ujaran Kebencian / Abusive).")
                 else:
                     st.warning("Tidak ada kalimat untuk dianalisis.")
 
@@ -278,7 +275,13 @@ def main():
                     for idx, detail in enumerate(problematic_sentences_details, 1):
                         st.markdown(f"---")
                         st.markdown(f"**Kalimat {idx}:** {detail['kalimat']}")
-                        st.markdown(f"**Label Terdeteksi:** {', '.join(detail['label_terdeteksi'])}")
+                        # Pastikan hanya menampilkan label yang terdeteksi dan bukan PS
+                        display_labels = [label for label in detail['label_terdeteksi'] if label != "Konten Positif"]
+                        if display_labels:
+                            st.markdown(f"**Label Terdeteksi:** {', '.join(display_labels)}")
+                        else:
+                            st.markdown(f"**Label Terdeteksi:** (Tidak ada label spesifik yang terdeteksi selain 'Konten Positif')") # Fallback jika hanya PS yang terdeteksi tapi diabaikan
+
                         with st.expander("Detail Probabilitas:"):
                             for label_desc, prob in detail['probabilitas'].items():
                                 st.write(f"- **{label_desc}**: {prob}")
@@ -288,18 +291,17 @@ def main():
         else:
             st.error("❌ URL tidak valid. Harap masukkan URL video YouTube yang benar.")
 
-    elif youtube_url and not api_key:
-        st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
+    # Bagian ini dihapus karena api_key sudah disematkan
+    # elif youtube_url and not api_key:
+    #     st.warning("⚠️ Masukkan API key SearchAPI.io untuk melanjutkan")
 
     # Instructions
     with st.expander("ℹ️ Cara Menggunakan"):
         st.markdown(
             """
-            1. **Dapatkan API key** dari [SearchAPI.io](https://www.searchapi.io/) (gratis)
-            2. **Masukkan API key** di field yang tersedia.
-            3. **Paste URL video YouTube** yang ingin dianalisis.
-            4. **Pastikan video memiliki subtitle bahasa Indonesia**.
-            5. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
+            1. **Paste URL video YouTube** yang ingin dianalisis.
+            2. **Pastikan video memiliki subtitle bahasa Indonesia**.
+            3. **Klik tombol 'Analisis Video'** dan tunggu prosesnya selesai.
 
             **Catatan**:
             - Tokenizer dan model akan didownload otomatis saat pertama kali digunakan.
@@ -307,46 +309,9 @@ def main():
             """
         )
 
-    with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):
-        st.markdown(
-            """
-            Jika Anda memiliki model PyTorch dalam format `.pth` dan ingin mengonversinya ke SafeTensors untuk keamanan dan kompatibilitas yang lebih baik:
-
-            ```python
-            # Jalankan di environment dengan PyTorch >= 2.6
-            from safetensors.torch import save_file
-            import torch
-            import os
-
-            # Ganti dengan path ke file .pth Anda
-            pth_file_path = "nama_model_anda.pth"
-            safetensors_output_path = "nama_model_anda.safetensors"
-
-            if not os.path.exists(pth_file_path):
-                print(f"Error: File '{pth_file_path}' tidak ditemukan.")
-            else:
-                try:
-                    print(f"Memuat model dari '{pth_file_path}'...")
-                    # weights_only=True adalah rekomendasi keamanan untuk PyTorch >= 1.12
-                    state_dict = torch.load(pth_file_path, map_location="cpu", weights_only=True)
-                    print("Model berhasil dimuat. Mengonversi ke SafeTensors...")
-                    save_file(state_dict, safetensors_output_path)
-                    print(f"✅ Konversi berhasil! File '{safetensors_output_path}' telah dibuat.")
-                    print(f"Sekarang upload '{safetensors_output_path}' ke Google Drive Anda dan perbarui ID-nya di kode Streamlit.")
-                except Exception as e:
-                    print(f"❌ Gagal mengonversi model: {e}")
-                    print("Pastikan file .pth tidak korup dan versi PyTorch Anda terbaru (>= 2.6 direkomendasikan).")
-            ```
-
-            **Langkah-langkah:**
-            1. Pastikan Anda memiliki PyTorch versi **2.6 atau lebih baru**: `pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu`
-            2. Instal pustaka SafeTensors: `pip install safetensors`
-            3. Unduh file `.pth` Anda secara manual ke komputer lokal Anda.
-            4. Buat dan jalankan skrip Python di atas (ganti `pth_file_path` dengan nama file `.pth` Anda).
-            5. Upload file `.safetensors` yang dihasilkan ke Google Drive dan dapatkan ID berbagi barunya.
-            6. Perbarui `model_safetensors_id` di kode Streamlit Anda dengan ID baru tersebut.
-            """
-        )
+    # 🔧 Panduan Konversi Manual (Jika diperlukan) dihapus
+    # with st.expander("🔧 Panduan Konversi Manual (Jika diperlukan)"):
+    #     st.markdown(...)
 
 if __name__ == "__main__":
     main()
